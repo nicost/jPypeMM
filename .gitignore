@@ -1,0 +1,16 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Micro-Manager writes its core log to the working directory at runtime
+CoreLogs/
+
+# Claude Code harness-local state
+.claude/

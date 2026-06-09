@@ -1,0 +1,10 @@
+[project]
+name = "jpypemm"
+version = "0.1.0"
+description = "Launch ImageJ + Micro-Manager 2.0 in-process from Python via JPype"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "jpype1>=1.7.1",
+    "numpy>=2.4.6",
+]
