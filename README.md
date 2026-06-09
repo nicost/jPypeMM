@@ -133,13 +133,36 @@ manager isn't available yet (`studio.live()` can be `null` until MM's GUI finish
 ## Viewing images with ndv
 
 The environment includes [`ndv`](https://github.com/pyapp-kit/ndv) (an n-dimensional array
-viewer, installed with the Qt backend via `ndv[qt]`). It's imported in `start_mm`, so at the
-`-i` prompt you can view a snapped image directly:
+viewer, installed with the Qt backend via `ndv[qt]`). It's imported in `start_mm`.
+
+`view(array)` opens a **non-blocking** viewer and returns the `ndv.ArrayViewer` so you keep the
+prompt and can update it live (unlike `ndv.imshow`, which runs the app loop and blocks):
 
 ```python
->>> view(snap(studio))                  # convenience: opens an ndv viewer window
->>> import ndv; ndv.imshow(snap(studio))  # equivalent, using ndv directly
+>>> viewer = view(snap(studio))        # opens a window, returns immediately
+>>> viewer.data = snap(studio)         # push new pixels into the same window
+>>> refresh(viewer)                    # repaint after an update
 ```
+
+Hold onto the returned `viewer` (don't let it be garbage-collected, or the window closes).
+
+**Layers / time points / channels:** ndv is an n-dimensional *array* viewer (not napari-style
+named layers). To show a stack, give it one N-d array and drive the axes:
+
+```python
+>>> import numpy as np
+>>> viewer = view(np.stack(frames))           # e.g. shape (T, C, H, W)
+>>> viewer.display_model.current_index = {0: t, 1: z}   # jump to a time/z point
+>>> refresh(viewer)
+```
+
+Multi-channel display (channel_mode / channel_axis / luts) is configured on
+`viewer.display_model` — see `ndv.models.ArrayDisplayModel`.
+
+**REPL note:** in a plain `python -i` prompt nothing pumps the Qt event loop while you type, so
+the window can look frozen between commands; `view()`/`refresh()` pump it once per call so your
+updates appear. For continuous interactivity (dragging sliders), call `refresh()` after
+interacting, or use `ndv.run_app()` (blocking) when you're done issuing commands.
 
 `view(array)` raises if ndv's Qt/graphics backend failed to import. The ndv viewer (Qt) runs
 alongside MM's Swing windows in the same process.

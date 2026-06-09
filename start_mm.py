@@ -430,20 +430,51 @@ def snap(studio, copy: bool = False, display: bool = True):
     return snap_core(studio.core(), copy=copy)
 
 
-def view(array):
-    """Open `array` in an ndv viewer window and return the ArrayViewer.
+def view(array=None):
+    """Open a NON-BLOCKING ndv viewer and return the ArrayViewer.
 
-    Convenience over ndv.imshow for the common case of inspecting a snapped
-    image, e.g. `view(snap(studio))`. Requires ndv with a working Qt/graphics
-    backend (installed via `ndv[qt]`); raises if ndv could not be imported. The
-    Qt viewer runs alongside MM's Swing windows in the same process.
+    Unlike ndv.imshow (which runs the app loop and blocks the prompt), this
+    constructs an ndv.ArrayViewer, shows it, and returns immediately so you keep
+    the live reference and the prompt stays interactive. Hold onto the returned
+    viewer (don't let it be garbage-collected) or it will close.
+
+    Updating the view (the returned `viewer`):
+      * Push new pixels:        viewer.data = snap(studio)
+      * Show an N-d stack:      viewer.data = np.stack(frames)   # e.g. (T, C, H, W)
+      * Move to a time/z point: viewer.display_model.current_index = {0: t, 1: z}
+      * Multi-channel display:  set channel_mode / channel_axis / luts on
+                                viewer.display_model (see ndv.models.ArrayDisplayModel)
+    ndv is an n-dimensional *array* viewer (not napari-style named layers): give
+    it one N-d array and drive the axes via current_index, rather than adding
+    separate layer objects.
+
+    After mutating data/display_model from a non-GUI thread, call
+    refresh(viewer) to repaint.
+
+    Requires ndv with a working Qt/graphics backend (installed via `ndv[qt]`).
+    The Qt viewer runs alongside MM's Swing windows in the same process.
     """
     if ndv is None:
         raise RuntimeError(
             "ndv is not available (Qt/graphics backend failed to import); "
             "install it with: uv add 'ndv[qt]'"
         )
-    return ndv.imshow(array)
+    viewer = ndv.ArrayViewer(array) if array is not None else ndv.ArrayViewer()
+    viewer.show()
+    ndv.process_events()  # pump the Qt loop once so the window actually paints
+    return viewer
+
+
+def refresh(viewer=None):
+    """Process pending GUI events so the ndv viewer repaints / stays responsive.
+
+    Call after updating viewer.data or viewer.display_model (especially from a
+    non-GUI thread) to flush the change to screen. With no argument it just pumps
+    the event loop. No-op if ndv is unavailable.
+    """
+    if ndv is None:
+        return
+    ndv.process_events()
 
 
 # The most recently launched MMStudio, captured so quit_now() can shut it down
