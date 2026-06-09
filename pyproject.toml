@@ -8,3 +8,14 @@ dependencies = [
     "jpype1>=1.7.1",
     "numpy>=2.4.6",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
+
+[tool.pytest.ini_options]
+# start_mm.py lives at the project root (not a package), so put the root on
+# sys.path for imports during tests.
+pythonpath = ["."]
+testpaths = ["tests"]
