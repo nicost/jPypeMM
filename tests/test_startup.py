@@ -26,7 +26,7 @@ def _patch_launch(monkeypatch):
     monkeypatch.setattr(start_mm, "find_mm_root", lambda: "FAKE_ROOT")
     monkeypatch.setattr(start_mm, "start_jvm", lambda root: calls.append("start_jvm"))
 
-    def fake_launch(timeout_s=60.0, quiet=True, skip_intro=False):
+    def fake_launch(timeout_s=60.0, quiet=True, skip_intro=False, wait_for_live=True):
         calls.append(f"launch(skip_intro={skip_intro})")
         return ("studio", _FakeCore())
 
@@ -68,6 +68,9 @@ def test_launch_calls_suppress_only_when_requested(monkeypatch):
         def core(self):
             return object()
 
+        def live(self):
+            return object()  # non-null so wait_for_live is satisfied
+
     fake_ij = types.ModuleType("ij")
     fake_ij.ImageJ = lambda: order.append("ImageJ")
     fake_ij.IJ = types.SimpleNamespace(
@@ -91,3 +94,53 @@ def test_launch_calls_suppress_only_when_requested(monkeypatch):
     start_mm.launch_imagej_with_mm(quiet=False, skip_intro=True)
     assert order[0] == "suppress"  # before ImageJ()/runPlugIn
     assert "runPlugIn" in order
+
+
+def test_wait_for_live_polls_until_live_nonnull(monkeypatch):
+    """wait_for_live=True must keep polling getInstance() until studio.live() is
+    non-null; wait_for_live=False must return as soon as core() is ready."""
+    import sys
+    import types
+
+    # A studio whose live() is null for the first N getInstance() calls, then
+    # becomes available — mimicking MM's asynchronous GUI init.
+    class _Studio:
+        def __init__(self, live_ready):
+            self._live_ready = live_ready
+
+        def core(self):
+            return object()
+
+        def live(self):
+            return object() if self._live_ready else None
+
+    state = {"calls": 0}
+
+    def get_instance():
+        state["calls"] += 1
+        # live() only ready on the 3rd+ getInstance() call
+        return _Studio(live_ready=state["calls"] >= 3)
+
+    monkeypatch.setattr(start_mm, "_redirect_java_streams_to_null", lambda: None)
+    monkeypatch.setattr(start_mm, "_silence_core_stderr", lambda core: None)
+    monkeypatch.setattr(start_mm.time, "sleep", lambda s: None)  # don't actually wait
+
+    fake_ij = types.ModuleType("ij")
+    fake_ij.ImageJ = lambda: None
+    fake_ij.IJ = types.SimpleNamespace(runPlugIn=lambda cls, arg: None)
+    fake_internal = types.ModuleType("org.micromanager.internal")
+    fake_internal.MMStudio = types.SimpleNamespace(getInstance=get_instance)
+    monkeypatch.setitem(sys.modules, "ij", fake_ij)
+    monkeypatch.setitem(sys.modules, "org", types.ModuleType("org"))
+    monkeypatch.setitem(sys.modules, "org.micromanager", types.ModuleType("org.micromanager"))
+    monkeypatch.setitem(sys.modules, "org.micromanager.internal", fake_internal)
+
+    # wait_for_live=False returns on the first instance (core ready immediately).
+    state["calls"] = 0
+    start_mm.launch_imagej_with_mm(quiet=False, wait_for_live=False)
+    assert state["calls"] == 1
+
+    # wait_for_live=True keeps polling until the 3rd instance (live ready).
+    state["calls"] = 0
+    start_mm.launch_imagej_with_mm(quiet=False, wait_for_live=True)
+    assert state["calls"] == 3

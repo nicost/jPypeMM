@@ -230,7 +230,10 @@ def _write_intro_skip_flags(admin, uuids, profile_skip: bool, config_skip: bool)
 
 
 def launch_imagej_with_mm(
-    timeout_s: float = 60.0, quiet: bool = True, skip_intro: bool = False
+    timeout_s: float = 60.0,
+    quiet: bool = True,
+    skip_intro: bool = False,
+    wait_for_live: bool = True,
 ):
     """Start ImageJ, then run the MM plugin exactly as the ImageJ menu does.
 
@@ -241,6 +244,11 @@ def launch_imagej_with_mm(
     With skip_intro=True, MM's modal startup dialog is suppressed so the launch
     needs no human input (opt-in; see suppress_intro_dialog for the persisted
     side effect).
+
+    With wait_for_live=True (default), waits until studio.live() (the live/snap
+    manager) is available before returning, so snap(studio) can use the live
+    path and the MM display updates on snap. Set False to return as soon as
+    core() is ready (faster; only CMMCore access needed).
     """
     from ij import IJ, ImageJ
     from org.micromanager.internal import MMStudio
@@ -254,15 +262,24 @@ def launch_imagej_with_mm(
     IJ.runPlugIn("MMStudioPlugin", "")
 
     # MMStudio initializes asynchronously on the Swing EDT after runPlugIn
-    # returns, so getInstance() — and its core() — are briefly null. Poll until
-    # both are live before handing back references.
+    # returns, so getInstance(), its core(), and its live() manager are briefly
+    # null and are published at different construction stages. Poll until all the
+    # references we need are live before handing back, so callers can use
+    # studio.live().snap(...) directly. (Set wait_for_live=False to return as
+    # soon as core() is up, e.g. when only CMMCore access is needed.)
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         studio = MMStudio.getInstance()
-        if studio is not None and studio.core() is not None:
+        if (
+            studio is not None
+            and studio.core() is not None
+            and (not wait_for_live or studio.live() is not None)
+        ):
             core = studio.core()
             if quiet:
                 _silence_core_stderr(core)
+            global _studio_ref
+            _studio_ref = studio  # for clean profile-lock release at exit
             return studio, core
         time.sleep(0.2)
     raise TimeoutError("MMStudio did not initialize within timeout")
@@ -401,6 +418,45 @@ def snap(studio, copy: bool = False):
     return snap_core(studio.core(), copy=copy)
 
 
+# The most recently launched MMStudio, captured so quit_now() can shut it down
+# cleanly (which releases MM's profile lock) before hard-exiting.
+_studio_ref = None
+
+
+def release_profile_lock(timeout_s: float = 10.0) -> bool:
+    """Cleanly shut down MMStudio so it releases the MM user-profile lock.
+
+    MM holds an OS file lock on UserProfileWriteLock for its whole run and only
+    releases it during orderly shutdown (MMStudio.closeSequence -> the profile
+    admin's shutdown()). Because we terminate via os._exit (to dodge the JPype/AWT
+    hang — see quit_now), that orderly shutdown never runs, so the lock can stay
+    held and the *next* MM launch fails with "Failed to acquire user lock". This
+    runs closeSequence(true) on a watchdog thread (it touches Swing, which can
+    block) and returns once it finishes or the timeout elapses; best-effort, so a
+    stuck shutdown never prevents the process from exiting.
+
+    Returns True if the shutdown call completed within the timeout.
+    """
+    studio = _studio_ref
+    if studio is None or not jpype.isJVMStarted():
+        return False
+    import threading
+
+    done = threading.Event()
+
+    def _close():
+        try:
+            studio.closeSequence(True)  # true: shutdown sequence; releases the lock
+        except Exception:
+            pass
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_close, daemon=True)
+    t.start()
+    return done.wait(timeout_s)
+
+
 def quit_now(code: int = 0):
     """Terminate the process immediately, bypassing JPype's blocking shutdown.
 
@@ -409,7 +465,12 @@ def quit_now(code: int = 0):
     falling off the end of the script — calls jpype.shutdownJVM(), which blocks
     forever waiting for those threads to die. os._exit() skips interpreter
     teardown (and that blocking JVM shutdown) and ends the process at once.
+
+    Before exiting we shut MMStudio down cleanly so it releases the profile lock
+    (otherwise the next MM launch hits "Failed to acquire user lock"). That step
+    is best-effort and time-bounded; os._exit then guarantees termination.
     """
+    release_profile_lock()
     os._exit(code)
 
 
@@ -417,18 +478,21 @@ def _install_clean_exit() -> None:
     """Make any normal exit terminate immediately instead of hanging.
 
     Registered as an atexit handler so that in `python -i` typing exit() or
-    Ctrl-D actually quits, and a non-interactive run ends after its work.
+    Ctrl-D actually quits, and a non-interactive run ends after its work — while
+    still releasing MM's profile lock first (see quit_now / release_profile_lock).
     """
     import atexit
 
     atexit.register(quit_now)
 
 
-def main(quiet: bool = True, skip_intro: bool = False):
+def main(quiet: bool = True, skip_intro: bool = False, wait_for_live: bool = True):
     mm_root = find_mm_root()
     print(f"MM root: {mm_root}")
     start_jvm(mm_root)
-    studio, core = launch_imagej_with_mm(quiet=quiet, skip_intro=skip_intro)
+    studio, core = launch_imagej_with_mm(
+        quiet=quiet, skip_intro=skip_intro, wait_for_live=wait_for_live
+    )
     print("ImageJ + Micro-Manager started.")
     print("  MM version :", core.getVersionInfo())
     print("  API version:", core.getAPIVersionInfo())
