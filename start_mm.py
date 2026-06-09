@@ -393,20 +393,24 @@ def snap_core(core, copy: bool = False) -> "np.ndarray":
     return _raw_to_numpy(raw, width, height, n_components, copy)
 
 
-def snap(studio, copy: bool = False):
+def snap(studio, copy: bool = False, display: bool = True):
     """Snap and return the image(s) as numpy array(s).
 
-    Prefers MM's live manager — studio.live().snap(True), the same call as the
-    live "Snap" button — so the MM display updates too. The live manager is not
-    always available (studio.live() can be null until MM's GUI finishes
-    initializing); when it is unavailable this falls back to the CMMCore snap
-    path (snap_core), which always works.
+    display=True (default) snaps via MM's live manager — studio.live().snap(True),
+    the same call as the live "Snap" button — so the snapped image is shown in
+    MM's display. display=False snaps straight from CMMCore (snap_core) without
+    updating any MM window.
+
+    The live manager is not always available (studio.live() can be null until
+    MM's GUI finishes initializing); when display=True but it is unavailable,
+    this falls back to the CMMCore path (so you still get the array, just without
+    the on-screen update).
 
     Returns a single numpy array for the common single-image case, else a list of
     arrays (one per channel/camera). See image_to_numpy for copy semantics;
     copy=False (default) returns read-only array(s).
     """
-    live = studio.live()
+    live = studio.live() if display else None
     if live is not None:
         images = live.snap(True)
         if images is not None and images.size() > 0:

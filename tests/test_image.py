@@ -93,3 +93,88 @@ def test_unsupported_format_raises():
     img = FakeImage(2, 2, 1, raw)
     with pytest.raises(TypeError):
         start_mm.image_to_numpy(img)
+
+
+# --- snap(): display flag routing --------------------------------------------
+class _FakeImageList:
+    def __init__(self, images):
+        self._images = images
+
+    def size(self):
+        return len(self._images)
+
+    def get(self, i):
+        return self._images[i]
+
+
+class _FakeLive:
+    def __init__(self, img):
+        self._img = img
+        self.called = False
+
+    def snap(self, should_display):
+        self.called = True
+        return _FakeImageList([self._img])
+
+
+class _FakeCore:
+    def __init__(self, width, height, n_components, raw):
+        self._w, self._h, self._n, self._raw = width, height, n_components, raw
+        self.snap_called = False
+
+    def snapImage(self):
+        self.snap_called = True
+
+    def getImage(self):
+        return self._raw
+
+    def getImageWidth(self):
+        return self._w
+
+    def getImageHeight(self):
+        return self._h
+
+    def getNumberOfComponents(self):
+        return self._n
+
+
+class _FakeStudio:
+    def __init__(self, live, core):
+        self._live, self._core = live, core
+
+    def live(self):
+        return self._live
+
+    def core(self):
+        return self._core
+
+
+def _make_studio(live_available=True):
+    raw = array.array("b", [1, 2, 3, 4])
+    img = FakeImage(2, 2, 1, raw)
+    live = _FakeLive(img) if live_available else None
+    core = _FakeCore(2, 2, 1, raw)
+    return _FakeStudio(live, core), live, core
+
+
+def test_snap_display_true_uses_live_manager():
+    studio, live, core = _make_studio(live_available=True)
+    arr = start_mm.snap(studio, display=True)
+    assert live.called is True            # went through studio.live().snap(...)
+    assert core.snap_called is False      # did NOT use the Core path
+    assert arr.shape == (2, 2)
+
+
+def test_snap_display_false_uses_core_no_display():
+    studio, live, core = _make_studio(live_available=True)
+    arr = start_mm.snap(studio, display=False)
+    assert live.called is False           # live manager untouched -> no display update
+    assert core.snap_called is True       # snapped via CMMCore
+    assert arr.shape == (2, 2)
+
+
+def test_snap_falls_back_to_core_when_live_unavailable():
+    studio, live, core = _make_studio(live_available=False)
+    arr = start_mm.snap(studio, display=True)  # asked to display, but live() is None
+    assert core.snap_called is True            # fell back to Core path
+    assert arr.shape == (2, 2)
