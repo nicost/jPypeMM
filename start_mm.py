@@ -20,6 +20,14 @@ import numpy as np
 import jpype
 import jpype.imports  # enables `from org... import ...` after startJVM  # noqa: F401
 
+# ndv (n-dimensional array viewer, Qt backend) for displaying snapped images.
+# Imported lazily-but-eagerly here so it's in the namespace at the `-i` prompt;
+# guarded so a missing/broken Qt backend never blocks launching Micro-Manager.
+try:
+    import ndv
+except Exception:  # pragma: no cover - only when the Qt/graphics backend is unavailable
+    ndv = None
+
 # Same JVM flags Micro-Manager's own launcher uses (see ImageJ.cfg).
 MM_FLAGS = ("-Xmx24000m", "-XX:MaxDirectMemorySize=1000g", "-XX:+UseG1GC")
 
@@ -420,6 +428,22 @@ def snap(studio, copy: bool = False, display: bool = True):
             return arrays[0] if len(arrays) == 1 else arrays
     # Fallback: live manager not ready — go straight to the Core.
     return snap_core(studio.core(), copy=copy)
+
+
+def view(array):
+    """Open `array` in an ndv viewer window and return the ArrayViewer.
+
+    Convenience over ndv.imshow for the common case of inspecting a snapped
+    image, e.g. `view(snap(studio))`. Requires ndv with a working Qt/graphics
+    backend (installed via `ndv[qt]`); raises if ndv could not be imported. The
+    Qt viewer runs alongside MM's Swing windows in the same process.
+    """
+    if ndv is None:
+        raise RuntimeError(
+            "ndv is not available (Qt/graphics backend failed to import); "
+            "install it with: uv add 'ndv[qt]'"
+        )
+    return ndv.imshow(array)
 
 
 # The most recently launched MMStudio, captured so quit_now() can shut it down

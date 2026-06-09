@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "jpype1>=1.7.1",
+    "ndv[qt]>=0.5.0",
     "numpy>=2.4.6",
 ]
 

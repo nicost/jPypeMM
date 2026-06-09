@@ -130,6 +130,20 @@ second copy.
 "Snap" button, so the MM display updates too) and falls back to the `CMMCore` path when the live
 manager isn't available yet (`studio.live()` can be `null` until MM's GUI finishes initializing).
 
+## Viewing images with ndv
+
+The environment includes [`ndv`](https://github.com/pyapp-kit/ndv) (an n-dimensional array
+viewer, installed with the Qt backend via `ndv[qt]`). It's imported in `start_mm`, so at the
+`-i` prompt you can view a snapped image directly:
+
+```python
+>>> view(snap(studio))                  # convenience: opens an ndv viewer window
+>>> import ndv; ndv.imshow(snap(studio))  # equivalent, using ndv directly
+```
+
+`view(array)` raises if ndv's Qt/graphics backend failed to import. The ndv viewer (Qt) runs
+alongside MM's Swing windows in the same process.
+
 ## Startup dialog (IntroDlg)
 
 By default MM shows a modal startup dialog (pick a user profile + hardware config, click OK)
