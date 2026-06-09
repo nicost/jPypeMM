@@ -136,16 +136,115 @@ def _redirect_java_streams_to_null() -> None:
     jpype.java.lang.System.setErr(devnull)
 
 
-def launch_imagej_with_mm(timeout_s: float = 60.0, quiet: bool = True):
+def suppress_intro_dialog() -> None:
+    """Seed the MM user profiles so MMStudio skips its modal startup dialog.
+
+    On launch MMStudio normally shows IntroDlg (the "splash screen" where you
+    pick a user profile + hardware config and click OK), which blocks until a
+    human clicks OK — fatal for automated/headless launches. MMStudio's init
+    gate is:
+
+        StartupSettings.create(admin.getNonSavingProfile(uuid))
+                       .shouldSkipUserInteractionWithSplashScreen()
+
+    which is true only when BOTH the profile-selection and config-selection skip
+    flags are set. The gate re-reads the profile JSON from disk, so we set both
+    flags and force a synchronous flush (DefaultUserProfile.close()) before the
+    plugin loads. Seeding both the default and current profile UUIDs avoids any
+    ambiguity over which one MMStudio resolves.
+
+    NOTE: this is a PERSISTED, per-machine setting — it also affects normal MM
+    launches until re-enabled in MM's dialog. It is opt-in (tests only); call it
+    AFTER start_jvm() and BEFORE launch_imagej_with_mm().
+
+    Returns the prior flag values, keyed by profile-UUID string, so the change
+    can be undone with restore_intro_dialog(saved).
+    """
+    from org.micromanager.internal import StartupSettings
+    from org.micromanager.profile.internal import UserProfileAdmin
+
+    admin = UserProfileAdmin.create()
+    uuids = {admin.getUUIDOfDefaultProfile(), admin.getUUIDOfCurrentProfile()}
+
+    saved: dict[str, tuple[bool, bool]] = {}
+    for uuid in uuids:
+        prior = StartupSettings.create(admin.getNonSavingProfile(uuid))
+        saved[str(uuid)] = (
+            bool(prior.shouldSkipProfileSelectionAtStartup()),
+            bool(prior.shouldSkipConfigSelectionAtStartup()),
+        )
+    _write_intro_skip_flags(admin, uuids, profile_skip=True, config_skip=True)
+
+    # Verify the gate exactly as MMStudio will read it (fresh non-saving read).
+    for uuid in uuids:
+        p = admin.getNonSavingProfile(uuid)
+        if not StartupSettings.create(p).shouldSkipUserInteractionWithSplashScreen():
+            raise RuntimeError(f"IntroDlg skip was not persisted for profile {uuid}")
+    return saved
+
+
+def restore_intro_dialog(saved: "dict[str, tuple[bool, bool]]") -> None:
+    """Undo suppress_intro_dialog(), restoring each profile's prior skip flags.
+
+    Pass the dict returned by suppress_intro_dialog(). This re-enables MM's
+    startup dialog for normal launches if it was showing before.
+    """
+    import java.util.UUID as UUID
+
+    from org.micromanager.internal import StartupSettings
+    from org.micromanager.profile.internal import UserProfileAdmin
+
+    admin = UserProfileAdmin.create()
+    for uuid_str, (profile_skip, config_skip) in saved.items():
+        _write_intro_skip_flags(
+            admin, [UUID.fromString(uuid_str)], profile_skip, config_skip
+        )
+    # Confirm each profile now reads back the requested values.
+    for uuid_str, (profile_skip, config_skip) in saved.items():
+        ss = StartupSettings.create(admin.getNonSavingProfile(UUID.fromString(uuid_str)))
+        if (
+            bool(ss.shouldSkipProfileSelectionAtStartup()) != profile_skip
+            or bool(ss.shouldSkipConfigSelectionAtStartup()) != config_skip
+        ):
+            raise RuntimeError(f"IntroDlg flags not restored for profile {uuid_str}")
+
+
+def _write_intro_skip_flags(admin, uuids, profile_skip: bool, config_skip: bool) -> None:
+    """Set both IntroDlg skip flags on each profile and flush synchronously."""
+    from org.micromanager.internal import StartupSettings
+
+    listener = jpype.JProxy(
+        "java.beans.ExceptionListener", dict={"exceptionThrown": lambda e: None}
+    )
+    for uuid in uuids:
+        profile = admin.getAutosavingProfile(uuid, listener)
+        settings = StartupSettings.create(profile)
+        settings.setSkipProfileSelectionAtStartup(profile_skip)
+        settings.setSkipConfigSelectionAtStartup(config_skip)
+        try:
+            profile.close()  # synchronous flush to disk — required, not the async saver
+        except jpype.JException:
+            pass  # close() declares InterruptedException; the write still happened
+
+
+def launch_imagej_with_mm(
+    timeout_s: float = 60.0, quiet: bool = True, skip_intro: bool = False
+):
     """Start ImageJ, then run the MM plugin exactly as the ImageJ menu does.
 
     With quiet=True, MM/ImageJ console output is suppressed (it is still written
     to MM's CoreLogs/ file). Redirecting the Java streams *before* the plugin
     load also hides the verbose startup dump, not just the steady-state logs.
+
+    With skip_intro=True, MM's modal startup dialog is suppressed so the launch
+    needs no human input (opt-in; see suppress_intro_dialog for the persisted
+    side effect).
     """
     from ij import IJ, ImageJ
     from org.micromanager.internal import MMStudio
 
+    if skip_intro:
+        suppress_intro_dialog()  # must precede the plugin load below
     ImageJ()  # opens the ImageJ main window (the host application)
     if quiet:
         _redirect_java_streams_to_null()
@@ -207,11 +306,11 @@ def _install_clean_exit() -> None:
     atexit.register(quit_now)
 
 
-def main(quiet: bool = True):
+def main(quiet: bool = True, skip_intro: bool = False):
     mm_root = find_mm_root()
     print(f"MM root: {mm_root}")
     start_jvm(mm_root)
-    studio, core = launch_imagej_with_mm(quiet=quiet)
+    studio, core = launch_imagej_with_mm(quiet=quiet, skip_intro=skip_intro)
     print("ImageJ + Micro-Manager started.")
     print("  MM version :", core.getVersionInfo())
     print("  API version:", core.getAPIVersionInfo())

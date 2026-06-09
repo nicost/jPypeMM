@@ -97,6 +97,47 @@ installs an `atexit` handler (`quit_now()`) that calls `os._exit(0)` to terminat
 so you can quit the `-i` prompt with `exit()` / Ctrl-D (or call `quit_now()`) without hanging.
 Closing the process also closes the MM windows, since they live in the same JVM.
 
+## Startup dialog (IntroDlg)
+
+By default MM shows a modal startup dialog (pick a user profile + hardware config, click OK)
+that blocks until a human responds — fine interactively, fatal for automated launches. The
+launcher leaves this **unchanged by default**: `uv run python -i start_mm.py` (and normal MM
+use) still show the dialog.
+
+For unattended/automated launches, pass `skip_intro=True`:
+
+```python
+>>> import start_mm
+>>> studio, core = start_mm.main(skip_intro=True)   # no dialog, no human input
+```
+
+This works by setting MM's "skip profile selection" and "skip config selection" flags in the
+user profile (`suppress_intro_dialog()`), which is what MM itself persists when you tick those
+boxes in the dialog. **It is a persisted, per-machine setting**: once set, normal MM launches
+also skip the dialog until you re-enable it from MM's startup dialog. With the dialog skipped MM
+starts with only the `Core` device; load a config yourself afterward
+(`core.loadSystemConfiguration(...)`). The integration tests use `skip_intro=True` so they run
+unattended.
+
+## Tests
+
+```powershell
+uv run pytest                       # fast unit tests (no JVM / MM needed)
+```
+
+The unit tests cover the path and classpath logic — install discovery (including the
+`MM_DIR` override and the Gamma-build ranking), bundled-JVM lookup, and classpath assembly
+(`stack-backup` exclusion, filename de-dup, `ij.jar` ordering, required-jar checks) — against a
+fake MM tree, plus the clean-exit handler wiring.
+
+Live integration tests that actually launch ImageJ + Micro-Manager are opt-in (they need a real
+MM install on a desktop session):
+
+```powershell
+$env:JPYPEMM_RUN_INTEGRATION = "1"
+uv run pytest tests/test_integration.py
+```
+
 ## Notes
 
 - Micro-Manager writes its `CoreLogs/` directory and searches for some plugins relative to
