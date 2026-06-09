@@ -169,3 +169,48 @@ def test_skip_intro_persists_flags_to_profile():
     text = open(profile, encoding="utf-8").read()
     assert "SKIP_PROFILE_SELECTION_AT_STARTUP" in text
     assert "SKIP_CONFIG_SELECTION_AT_STARTUP" in text
+
+
+def test_snap_returns_numpy_for_each_pixel_type():
+    """End-to-end: snap() returns a correctly shaped/typed numpy array for every
+    demo-camera pixel type, against the real live-manager snap path."""
+    proc = _run(
+        """
+        import sys, start_mm
+        start_mm._install_clean_exit()
+        studio, core = start_mm.main(quiet=True, skip_intro=True)
+        mm_root = start_mm.find_mm_root()
+        if "Camera" not in list(core.getLoadedDevices()):
+            core.loadSystemConfiguration(str(mm_root / "MMConfig_demo.cfg"))
+        cam = core.getCameraDevice()
+        expect = {
+            "8bit":     ("(h, w)",    "uint8"),
+            "16bit":    ("(h, w)",    "uint16"),
+            "32bit":    ("(h, w)",    "float32"),
+            "32bitRGB": ("(h, w, 3)", "uint8"),
+            "64bitRGB": ("(h, w, 3)", "uint16"),
+        }
+        w = int(core.getImageWidth()); h = int(core.getImageHeight())
+        for pt, (kind, dt) in expect.items():
+            core.setProperty(cam, "PixelType", pt)
+            core.waitForDevice(cam)
+            arr = start_mm.snap(studio)            # read-only single image
+            want = (h, w) if kind == "(h, w)" else (h, w, 3)
+            ok = (arr.shape == want and str(arr.dtype) == dt
+                  and arr.flags.writeable is False)
+            print(f"PT {pt}: shape={arr.shape} dtype={arr.dtype} ro={not arr.flags.writeable} OK={ok}")
+        # copy=True must be writable
+        arrw = start_mm.snap(studio, copy=True)
+        print("WRITABLE:" + str(arrw.flags.writeable))
+        print("DONE")
+        sys.stdout.flush()
+        """,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "DONE" in proc.stdout
+    assert "WRITABLE:True" in proc.stdout
+    # Every pixel type must have reported OK=True.
+    pt_lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("PT ")]
+    assert len(pt_lines) == 5, proc.stdout
+    assert all("OK=True" in ln for ln in pt_lines), proc.stdout

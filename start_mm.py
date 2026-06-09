@@ -15,6 +15,8 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 import jpype
 import jpype.imports  # enables `from org... import ...` after startJVM  # noqa: F401
 
@@ -281,6 +283,122 @@ def _silence_core_stderr(core, settle_s: float = 3.0) -> None:
         if core.stderrLogEnabled():
             core.enableStderrLog(False)
         time.sleep(0.1)
+
+
+# --- Image -> numpy conversion ------------------------------------------------
+#
+# Zero-copy is NOT possible here: MM hands pixels back as an on-heap Java
+# primitive array (byte[]/short[]/float[]) from Image.getRawPixels() /
+# CMMCore.getImage() — never a java.nio direct buffer. The JVM GC may relocate
+# heap arrays, so no stable pointer can be shared. JPype's memoryview() of such
+# an array is therefore a *read-only copy* out of the JVM. We do exactly one
+# copy (JVM heap -> numpy) and add no further Python-side copies.
+#
+# Demo-camera pixel-type matrix (PixelType -> raw / shape / dtype), keyed off the
+# Image's own metadata rather than the PixelType string so it generalizes:
+#   8bit     byte[]   1 comp  -> (h, w)     uint8
+#   16bit    short[]  1 comp  -> (h, w)     uint16   (Java short is signed; pixels are unsigned)
+#   32bit    float[]  1 comp  -> (h, w)     float32
+#   32bitRGB byte[]   4 comp  -> (h, w, 3)  uint8    (packed BGRA; drop alpha, reorder to RGB)
+#   64bitRGB short[]  4 comp  -> (h, w, 3)  uint16
+
+# memoryview format char (from JPype) -> the matching unsigned/native numpy dtype.
+# Java has no unsigned types, so 'b'/'h'/'i' arrive signed but hold unsigned pixel
+# data; reinterpret as the unsigned dtype of the same width.
+_FORMAT_TO_DTYPE = {
+    "b": np.uint8,   # signed byte holding unsigned 8-bit pixels
+    "B": np.uint8,
+    "h": np.uint16,  # signed short holding unsigned 16-bit pixels
+    "H": np.uint16,
+    "f": np.float32,
+}
+
+
+def image_to_numpy(image, copy: bool = False) -> "np.ndarray":
+    """Convert an org.micromanager.data.Image to a correctly shaped numpy array.
+
+    Grayscale images become (height, width); RGB images become (height, width, 3)
+    in R,G,B order (MM stores them packed as BGRA — the alpha channel is dropped).
+    dtype follows the pixel type: uint8 (8-bit), uint16 (16-bit), float32 (32-bit
+    float).
+
+    Exactly one copy is made (JVM heap -> numpy), which is unavoidable (see the
+    module note above). By default the returned array is **read-only** (a view of
+    that single copied buffer). Pass copy=True for a writable array, at the cost
+    of a second copy.
+    """
+    return _raw_to_numpy(
+        image.getRawPixels(),  # Java byte[]/short[]/float[]
+        int(image.getWidth()),
+        int(image.getHeight()),
+        int(image.getNumComponents()),
+        copy,
+    )
+
+
+def _raw_to_numpy(raw, width: int, height: int, n_components: int, copy: bool):
+    """Shared core: wrap a Java primitive pixel array as a shaped numpy array.
+
+    See image_to_numpy for the copy semantics; this is the buffer-level worker
+    used by both the Image and the CMMCore paths.
+    """
+    mv = memoryview(raw)  # JPype: single read-only copy out of the JVM
+    dtype = _FORMAT_TO_DTYPE.get(mv.format)
+    if dtype is None:
+        raise TypeError(f"Unsupported pixel buffer format {mv.format!r}")
+    flat = np.frombuffer(mv, dtype=dtype)  # no further copy
+
+    if n_components == 1:
+        arr = flat.reshape(height, width)
+    else:
+        packed = flat.reshape(height, width, n_components)
+        arr = packed[:, :, 2::-1]  # BGRA -> R,G,B (drop alpha)
+
+    if copy:
+        return arr.copy()
+    arr.flags.writeable = False
+    return arr
+
+
+def snap_core(core, copy: bool = False) -> "np.ndarray":
+    """Snap one image straight from CMMCore and return it as a numpy array.
+
+    Uses core.snapImage() + core.getImage(), which is reliable regardless of the
+    GUI/live-manager state (studio.live() can be null early in startup). Shape
+    and dtype are derived from the Core's image metadata. See image_to_numpy for
+    copy semantics; copy=False (default) returns a read-only array.
+    """
+    core.snapImage()
+    raw = core.getImage()
+    width = int(core.getImageWidth())
+    height = int(core.getImageHeight())
+    n_components = int(core.getNumberOfComponents())
+    return _raw_to_numpy(raw, width, height, n_components, copy)
+
+
+def snap(studio, copy: bool = False):
+    """Snap and return the image(s) as numpy array(s).
+
+    Prefers MM's live manager — studio.live().snap(True), the same call as the
+    live "Snap" button — so the MM display updates too. The live manager is not
+    always available (studio.live() can be null until MM's GUI finishes
+    initializing); when it is unavailable this falls back to the CMMCore snap
+    path (snap_core), which always works.
+
+    Returns a single numpy array for the common single-image case, else a list of
+    arrays (one per channel/camera). See image_to_numpy for copy semantics;
+    copy=False (default) returns read-only array(s).
+    """
+    live = studio.live()
+    if live is not None:
+        images = live.snap(True)
+        if images is not None and images.size() > 0:
+            arrays = [
+                image_to_numpy(images.get(i), copy=copy) for i in range(images.size())
+            ]
+            return arrays[0] if len(arrays) == 1 else arrays
+    # Fallback: live manager not ready — go straight to the Core.
+    return snap_core(studio.core(), copy=copy)
 
 
 def quit_now(code: int = 0):

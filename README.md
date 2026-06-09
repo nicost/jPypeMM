@@ -97,6 +97,39 @@ installs an `atexit` handler (`quit_now()`) that calls `os._exit(0)` to terminat
 so you can quit the `-i` prompt with `exit()` / Ctrl-D (or call `quit_now()`) without hanging.
 Closing the process also closes the MM windows, since they live in the same JVM.
 
+## Snapping images as numpy arrays
+
+`snap(studio)` snaps an image and returns it as a numpy array with the correct shape and dtype:
+
+```python
+>>> import start_mm
+>>> studio, core = start_mm.main(skip_intro=True)
+>>> core.loadSystemConfiguration(r"C:\Program Files\Micro-Manager-2.0\MMConfig_demo.cfg")
+>>> img = start_mm.snap(studio)        # read-only array
+>>> img.shape, img.dtype               # e.g. (512, 512) uint16
+>>> img = start_mm.snap(studio, copy=True)   # writable copy
+```
+
+Shape/dtype follow the camera's pixel type: grayscale → `(height, width)` as `uint8` / `uint16`
+/ `float32`; RGB → `(height, width, 3)` as `uint8` / `uint16` in **R, G, B** order (MM stores
+RGB packed as BGRA; the alpha channel is dropped).
+
+Related helpers: `snap_core(core)` snaps straight from `CMMCore` (always works, even before the
+GUI is ready); `image_to_numpy(image)` converts an existing `org.micromanager.data.Image`.
+
+**On copying / "zero-copy":** a true zero-copy view is not possible here. MM returns pixels as a
+Java on-heap primitive array (`byte[]`/`short[]`/`float[]`) — never an off-heap `java.nio`
+direct buffer — and the JVM garbage collector may relocate heap arrays, so no stable pointer can
+be shared with numpy. JPype's `memoryview()` of such an array is itself a **read-only copy** out
+of the JVM. These functions therefore make **exactly one copy** (JVM heap → numpy) and add no
+further Python-side copies; that single copy is unavoidable. The result is returned **read-only**
+by default (a view onto that one buffer); pass `copy=True` for a writable array, at the cost of a
+second copy.
+
+`snap(studio)` prefers MM's live manager (`studio.live().snap(True)`, the same call as the live
+"Snap" button, so the MM display updates too) and falls back to the `CMMCore` path when the live
+manager isn't available yet (`studio.live()` can be `null` until MM's GUI finishes initializing).
+
 ## Startup dialog (IntroDlg)
 
 By default MM shows a modal startup dialog (pick a user profile + hardware config, click OK)
