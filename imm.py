@@ -37,7 +37,29 @@ def main() -> None:
         action="store_true",
         help="show MM/ImageJ console output (off by default)",
     )
+    parser.add_argument(
+        "--simple-prompt",
+        action="store_true",
+        help=(
+            "fall back to IPython's plain prompt (no prompt_toolkit). Use this if "
+            "the Qt GUI integration misbehaves; you then drive the viewer with "
+            "explicit refresh() calls instead of a live event loop."
+        ),
+    )
     args = parser.parse_args()
+
+    # Pin ndv to the Qt GUI backend BEFORE anything creates a viewer, so ndv's
+    # canvas (rendercanvas) shares Qt's event loop rather than spinning up its
+    # own asyncio/trio loop. Without this, IPython's Qt inputhook collides with
+    # rendercanvas's default loop ("Incompatible awaitable result ..."). Import a
+    # Qt binding first so rendercanvas binds to Qt.
+    if start_mm.ndv is not None:
+        try:
+            import PyQt6.QtWidgets  # noqa: F401  (selects the Qt toolkit)
+
+            start_mm.ndv.set_gui_backend("qt")
+        except Exception:
+            pass
 
     start_mm._install_clean_exit()
     studio, core = start_mm.main(quiet=not args.no_quiet, skip_intro=args.skip_intro)
@@ -67,11 +89,16 @@ def main() -> None:
     from traitlets.config import Config
 
     config = Config()
-    # %gui qt equivalent: integrate the Qt event loop with the prompt so ndv and
-    # MM's Swing windows both stay live while you type.
-    config.InteractiveShellApp.gui = "qt"
     config.TerminalInteractiveShell.banner1 = banner
     config.TerminalIPythonApp.display_banner = True
+    if args.simple_prompt:
+        # No prompt_toolkit input loop and so no Qt inputhook: the viewer won't
+        # auto-update — call refresh(viewer) after changes.
+        config.TerminalInteractiveShell.simple_prompt = True
+    else:
+        # %gui qt equivalent: integrate the Qt event loop with the prompt so ndv
+        # (and MM's Swing windows) stay live while you type.
+        config.InteractiveShellApp.gui = "qt"
 
     start_ipython(argv=[], user_ns=user_ns, config=config)
 

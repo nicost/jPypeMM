@@ -186,6 +186,18 @@ In [2]: viewer.data = snap(studio)      # updates appear immediately
 
 Type `exit()` / Ctrl-D to quit (the clean-exit handler releases MM's profile lock first).
 
+`imm.py` pins ndv to the **Qt** backend (`ndv.set_gui_backend("qt")`) so its canvas shares Qt's
+event loop instead of starting its own asyncio loop — without this the two loops collide
+("Incompatible awaitable result ..."). If the Qt prompt integration still misbehaves on your
+setup, fall back to a plain prompt and drive updates manually:
+
+```powershell
+uv run python imm.py --simple-prompt
+```
+
+In `--simple-prompt` mode there's no live event loop, so call `refresh(viewer)` after updating
+`viewer.data` / `viewer.display_model` to repaint.
+
 `view(array)` raises if ndv's Qt/graphics backend failed to import. The ndv viewer (Qt) runs
 alongside MM's Swing windows in the same process.
 
