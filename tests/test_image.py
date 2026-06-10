@@ -183,73 +183,52 @@ class _FakeImageList:
 
 
 class _FakeLive:
-    def __init__(self, img):
-        self._img = img
-        self.called = False
+    """Mimics studio.live(): snap(shouldDisplay) -> image list, recording the arg."""
+
+    def __init__(self, *imgs):
+        self._imgs = imgs
+        self.snap_display_arg = None  # the bool passed to the last snap()
 
     def snap(self, should_display):
-        self.called = True
-        return _FakeImageList([self._img])
+        self.snap_display_arg = should_display
+        return _FakeImageList(list(self._imgs))
 
 
-class _FakeCore:
-    def __init__(self, width, height, n_components, raw):
-        self._w, self._h, self._n, self._raw = width, height, n_components, raw
-        self.snap_called = False
-
-    def snapImage(self):
-        self.snap_called = True
-
-    def getImage(self):
-        return self._raw
-
-    def getImageWidth(self):
-        return self._w
-
-    def getImageHeight(self):
-        return self._h
-
-    def getNumberOfComponents(self):
-        return self._n
-
-
-class _FakeStudio:
-    def __init__(self, live, core):
-        self._live, self._core = live, core
-
-    def live(self):
-        return self._live
-
-    def core(self):
-        return self._core
-
-
-def _make_studio(live_available=True):
+def test_snap_passes_display_true_to_live():
     raw = array.array("b", [1, 2, 3, 4])
-    img = FakeImage(2, 2, 1, raw)
-    live = _FakeLive(img) if live_available else None
-    core = _FakeCore(2, 2, 1, raw)
-    return _FakeStudio(live, core), live, core
-
-
-def test_snap_display_true_uses_live_manager():
-    studio, live, core = _make_studio(live_available=True)
-    arr = start_mm.snap(studio, display=True)
-    assert live.called is True            # went through studio.live().snap(...)
-    assert core.snap_called is False      # did NOT use the Core path
+    live = _FakeLive(FakeImage(2, 2, 1, raw))
+    arr = start_mm.snap(live, display=True)
+    assert live.snap_display_arg is True   # live.snap(True): image shown in MM display
     assert arr.shape == (2, 2)
 
 
-def test_snap_display_false_uses_core_no_display():
-    studio, live, core = _make_studio(live_available=True)
-    arr = start_mm.snap(studio, display=False)
-    assert live.called is False           # live manager untouched -> no display update
-    assert core.snap_called is True       # snapped via CMMCore
+def test_snap_passes_display_false_to_live():
+    raw = array.array("b", [1, 2, 3, 4])
+    live = _FakeLive(FakeImage(2, 2, 1, raw))
+    arr = start_mm.snap(live, display=False)
+    assert live.snap_display_arg is False  # live.snap(False): snapped without display
     assert arr.shape == (2, 2)
 
 
-def test_snap_falls_back_to_core_when_live_unavailable():
-    studio, live, core = _make_studio(live_available=False)
-    arr = start_mm.snap(studio, display=True)  # asked to display, but live() is None
-    assert core.snap_called is True            # fell back to Core path
-    assert arr.shape == (2, 2)
+def test_snap_returns_list_for_multiple_images():
+    raw = array.array("b", [1, 2, 3, 4])
+    live = _FakeLive(FakeImage(2, 2, 1, raw), FakeImage(2, 2, 1, raw))
+    arrs = start_mm.snap(live)
+    assert isinstance(arrs, list) and len(arrs) == 2
+    assert all(a.shape == (2, 2) for a in arrs)
+
+
+def test_snap_raises_when_live_returns_no_images():
+    # live.snap() can return null/empty (it swallows internal errors); snap must
+    # raise a clear error rather than crash on .size()/.get().
+    class _NullLive:
+        def snap(self, should_display):
+            return None
+
+    class _EmptyLive:
+        def snap(self, should_display):
+            return _FakeImageList([])
+
+    for live in (_NullLive(), _EmptyLive()):
+        with pytest.raises(RuntimeError, match="no images"):
+            start_mm.snap(live)

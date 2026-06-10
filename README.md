@@ -99,15 +99,16 @@ Closing the process also closes the MM windows, since they live in the same JVM.
 
 ## Snapping images as numpy arrays
 
-`snap(studio)` snaps an image and returns it as a numpy array with the correct shape and dtype:
+`snap(studio.live())` snaps an image via MM's live manager and returns it as a numpy array with
+the correct shape and dtype:
 
 ```python
 >>> import start_mm
 >>> studio, core = start_mm.main(skip_intro=True)
 >>> core.loadSystemConfiguration(r"C:\Program Files\Micro-Manager-2.0\MMConfig_demo.cfg")
->>> img = start_mm.snap(studio)        # read-only array
->>> img.shape, img.dtype               # e.g. (512, 512) uint16
->>> img = start_mm.snap(studio, copy=True)   # writable copy
+>>> img = start_mm.snap(studio.live())        # read-only array
+>>> img.shape, img.dtype                       # e.g. (512, 512) uint16
+>>> img = start_mm.snap(studio.live(), copy=True)   # writable copy
 ```
 
 Shape/dtype follow the camera's pixel type: grayscale → `(height, width)` as `uint8` / `uint16`
@@ -126,9 +127,11 @@ further Python-side copies; that single copy is unavoidable. The result is retur
 by default (a view onto that one buffer); pass `copy=True` for a writable array, at the cost of a
 second copy.
 
-`snap(studio)` prefers MM's live manager (`studio.live().snap(True)`, the same call as the live
-"Snap" button, so the MM display updates too) and falls back to the `CMMCore` path when the live
-manager isn't available yet (`studio.live()` can be `null` until MM's GUI finishes initializing).
+`snap(live)` calls `live.snap(display)` (the same call as the live "Snap" button); with the
+default `display=True` the snapped image is also shown in MM's display, and `display=False` snaps
+without updating any window. `studio.live()` can be `null` until MM's GUI finishes initializing —
+pass a ready live manager, or use `snap_core(core)` for a Core-only snap that works regardless of
+GUI state.
 
 ## Building a Datastore and viewing it in Micro-Manager
 

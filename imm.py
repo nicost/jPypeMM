@@ -94,7 +94,7 @@ def main() -> None:
 
     banner = (
         "\njPypeMM interactive shell (IPython + Qt GUI integration).\n"
-        "  studio, core ready. Helpers: snap(studio), view(array), refresh(viewer).\n"
+        "  studio, core ready. Helpers: snap(studio.live()), view(array), refresh(viewer).\n"
         "  ndv Qt windows stay responsive — no manual refresh() needed.\n"
         "  exit() / Ctrl-D to quit.\n"
     )

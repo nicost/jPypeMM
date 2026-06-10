@@ -318,8 +318,8 @@ def launch_imagej_with_mm(
     side effect).
 
     With wait_for_live=True (default), waits until studio.live() (the live/snap
-    manager) is available before returning, so snap(studio) can use the live
-    path and the MM display updates on snap. Set False to return as soon as
+    manager) is available before returning, so snap(studio.live()) can use the
+    live path and the MM display updates on snap. Set False to return as soon as
     core() is ready (faster; only CMMCore access needed).
     """
     from ij import IJ, ImageJ
@@ -592,33 +592,36 @@ def snap_core(core, copy: bool = False) -> "np.ndarray":
     return _raw_to_numpy(raw, width, height, n_components, copy)
 
 
-def snap(studio, copy: bool = False, display: bool = True):
-    """Snap and return the image(s) as numpy array(s).
+def snap(live, copy: bool = False, display: bool = True):
+    """Snap via MM's live manager and return the image(s) as numpy array(s).
 
-    display=True (default) snaps via MM's live manager — studio.live().snap(True),
-    the same call as the live "Snap" button — so the snapped image is shown in
-    MM's display. display=False snaps straight from CMMCore (snap_core) without
-    updating any MM window.
+    ``live`` is the live/snap manager (``studio.live()``). This calls
+    ``live.snap(display)`` — the same call as the live "Snap" button. With
+    display=True (default) the snapped image is shown in MM's display; with
+    display=False it is snapped without updating any MM window.
 
-    The live manager is not always available (studio.live() can be null until
-    MM's GUI finishes initializing); when display=True but it is unavailable,
-    this falls back to the CMMCore path (so you still get the array, just without
-    the on-screen update).
+    ``studio.live()`` can be null until MM's GUI finishes initializing — pass a
+    live manager that is ready, or use ``snap_core(core)`` for a Core-only snap
+    that works regardless of GUI state.
 
     Returns a single numpy array for the common single-image case, else a list of
     arrays (one per channel/camera). See image_to_numpy for copy semantics;
     copy=False (default) returns read-only array(s).
+
+    Raises RuntimeError if the live manager returns no images — its snap() catches
+    internal errors and returns null/empty (e.g. a snap issued while the camera is
+    still reconfiguring), rather than throwing.
     """
-    live = studio.live() if display else None
-    if live is not None:
-        images = live.snap(True)
-        if images is not None and images.size() > 0:
-            arrays = [
-                image_to_numpy(images.get(i), copy=copy) for i in range(images.size())
-            ]
-            return arrays[0] if len(arrays) == 1 else arrays
-    # Fallback: live manager not ready — go straight to the Core.
-    return snap_core(studio.core(), copy=copy)
+    images = live.snap(display)
+    if images is None or images.size() == 0:
+        raise RuntimeError(
+            "live.snap() returned no images (the live manager failed the snap or "
+            "is not ready); retry, or use snap_core(core) for a Core-only snap"
+        )
+    arrays = [
+        image_to_numpy(images.get(i), copy=copy) for i in range(images.size())
+    ]
+    return arrays[0] if len(arrays) == 1 else arrays
 
 
 def view(array=None):
@@ -630,7 +633,7 @@ def view(array=None):
     viewer (don't let it be garbage-collected) or it will close.
 
     Updating the view (the returned `viewer`):
-      * Push new pixels:        viewer.data = snap(studio)
+      * Push new pixels:        viewer.data = snap(studio.live())
       * Show an N-d stack:      viewer.data = np.stack(frames)   # e.g. (T, C, H, W)
       * Move to a time/z point: viewer.display_model.current_index = {0: t, 1: z}
       * Multi-channel display:  set channel_mode / channel_axis / luts on
