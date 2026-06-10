@@ -186,10 +186,12 @@ In [2]: viewer.data = snap(studio)      # updates appear immediately
 
 Type `exit()` / Ctrl-D to quit (the clean-exit handler releases MM's profile lock first).
 
-`imm.py` pins ndv to the **Qt** backend (`ndv.set_gui_backend("qt")`) so its canvas shares Qt's
-event loop instead of starting its own asyncio loop — without this the two loops collide
-("Incompatible awaitable result ..."). If the Qt prompt integration still misbehaves on your
-setup, fall back to a plain prompt and drive updates manually:
+`imm.py` forces ndv's canvas (rendercanvas) onto the **Qt** event loop — it sets
+`RENDERCANVAS_BACKEND=qt` before ndv is imported, calls `ndv.set_gui_backend("qt")`, and creates
+a `QApplication` up front. Without this, rendercanvas auto-selects an asyncio loop and updating
+`viewer.data` raises "Incompatible awaitable result ... asyncio or trio".
+
+If the Qt prompt integration still misbehaves on your setup, fall back to a plain prompt:
 
 ```powershell
 uv run python imm.py --simple-prompt

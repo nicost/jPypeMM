@@ -21,6 +21,19 @@ first, then terminates).
 from __future__ import annotations
 
 import argparse
+import os
+
+# Force ndv's canvas (rendercanvas) onto the Qt event loop. This MUST be set
+# before ndv/rendercanvas is imported (start_mm imports ndv), otherwise
+# rendercanvas auto-selects an asyncio loop and updating viewer.data raises
+# "Incompatible awaitable result ... asyncio or trio". Importing a Qt binding
+# first reinforces the choice (rendercanvas also picks Qt when a Qt lib is
+# already imported).
+os.environ.setdefault("RENDERCANVAS_BACKEND", "qt")
+try:
+    import PyQt6.QtWidgets as _QtWidgets  # noqa: F401  (selects the Qt toolkit)
+except Exception:  # pragma: no cover
+    _QtWidgets = None
 
 import start_mm
 
@@ -48,16 +61,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Pin ndv to the Qt GUI backend BEFORE anything creates a viewer, so ndv's
-    # canvas (rendercanvas) shares Qt's event loop rather than spinning up its
-    # own asyncio/trio loop. Without this, IPython's Qt inputhook collides with
-    # rendercanvas's default loop ("Incompatible awaitable result ..."). Import a
-    # Qt binding first so rendercanvas binds to Qt.
-    if start_mm.ndv is not None:
+    # Pin ndv's GUI backend to Qt and make sure a QApplication exists before any
+    # viewer is created (the canvas loop is forced to Qt via RENDERCANVAS_BACKEND
+    # set at import time above). A QApplication must exist before ndv constructs a
+    # QWidget — IPython's gui="qt" eventually creates one, but --simple-prompt
+    # does not, so we create it here for both paths.
+    if start_mm.ndv is not None and _QtWidgets is not None:
         try:
-            import PyQt6.QtWidgets  # noqa: F401  (selects the Qt toolkit)
-
             start_mm.ndv.set_gui_backend("qt")
+            _QtWidgets.QApplication.instance() or _QtWidgets.QApplication([])
         except Exception:
             pass
 
