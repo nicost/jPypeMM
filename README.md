@@ -1,6 +1,8 @@
 # jPypeMM
 
-Launch **ImageJ** with **Micro-Manager 2.0** loaded as a plugin, in-process from Python
+**This is an experimental repository, at this point in time for experimentation only.  Doch and every aspect of it can change at any point in time. not base other projects on it unless you are ready to maintain a fork of this repo yourself**
+
+Launches **ImageJ** with **Micro-Manager 2.0** loaded as a plugin, in-process from Python
 using [JPype](https://jpype.readthedocs.io). The JVM runs *inside* the Python process via
 JNI — no sockets, no IPC — so Python holds direct references to the MM `Studio` and `CMMCore`
 objects and can call any Java method (including plugin classes) with near-zero overhead.
