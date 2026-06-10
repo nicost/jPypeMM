@@ -156,11 +156,15 @@ on = np.iinfo(original.dtype).max if np.issubdtype(original.dtype, np.integer) e
 mask = np.where(original >= level, on, 0).astype(original.dtype)
 
 # 3. 2-channel RAM datastore (set summary metadata BEFORE putImage)
+#    imageWidth/imageHeight take a boxed Java Integer; start_mm.jint() converts it.
+h, w = original.shape[:2]
 store = data.createRAMDatastore()
 store.setSummaryMetadata(
     data.summaryMetadataBuilder()
         .channelNames("Original", "Otsu mask")
         .intendedDimensions(data.coordsBuilder().c(2).build())
+        .imageWidth(start_mm.jint(w))
+        .imageHeight(start_mm.jint(h))
         .build()
 )
 for ch, arr in enumerate((original, mask)):

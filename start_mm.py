@@ -454,6 +454,24 @@ def _raw_to_numpy(raw, width: int, height: int, n_components: int, copy: bool):
     return arr
 
 
+def jint(value):
+    """Box a Python int as a Java Integer for MM builder setters.
+
+    Many MM builder methods take a boxed ``java.lang.Integer`` (e.g.
+    ``Metadata.Builder.bitDepth``, ``SummaryMetadata.Builder.imageWidth`` /
+    ``imageHeight``). JPype will not match a bare Python ``int`` to an ``Integer``
+    parameter (it raises "No matching overloads ...(int)"), so the value must be
+    wrapped. ``None`` passes through unchanged (these fields are nullable).
+
+    Example::
+
+        data.summaryMetadataBuilder().imageWidth(jint(w)).imageHeight(jint(h))
+    """
+    if value is None:
+        return None
+    return jpype.JInt(int(value))
+
+
 # --- numpy -> Image conversion (inverse of the above) -------------------------
 #
 # DataManager.createImage(pixels, width, height, bytesPerPixel, numComponents,
@@ -509,7 +527,7 @@ def numpy_to_image(data, array, coords=None, metadata=None):
         # bitDepth = bits per component (uint8->8, uint16->16, float32->32). MM's
         # display needs this set or it picks a degenerate contrast range -> black.
         bit_depth = int(np.dtype(array.dtype).itemsize * 8)
-        metadata = data.metadataBuilder().bitDepth(jpype.JInt(bit_depth)).build()
+        metadata = data.metadataBuilder().bitDepth(jint(bit_depth)).build()
     return data.createImage(
         pixels, width, height, bytes_per_pixel, num_components, coords, metadata
     )

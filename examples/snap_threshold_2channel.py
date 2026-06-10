@@ -54,12 +54,16 @@ def snap_threshold_two_channel(studio, core):
 
     # Summary metadata must be set BEFORE putImage. Declaring the channel names
     # (and intended dimensions) is what makes the viewer present this as a
-    # 2-channel dataset with a channel slider.
+    # 2-channel dataset with a channel slider. imageWidth/imageHeight take a boxed
+    # Java Integer — start_mm.jint() does that conversion (a bare int won't match).
+    height, width = original.shape[:2]
     intended = data.coordsBuilder().c(2).build()  # 2 channels, single z/t/p
     summary = (
         data.summaryMetadataBuilder()
         .channelNames("Original", "Otsu mask")
         .intendedDimensions(intended)
+        .imageWidth(start_mm.jint(width))
+        .imageHeight(start_mm.jint(height))
         .build()
     )
     store.setSummaryMetadata(summary)
