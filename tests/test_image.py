@@ -117,11 +117,13 @@ def test_numpy_to_raw_16bit_gray_preserves_unsigned():
     assert list(flat.view(np.uint16)) == list(arr.reshape(-1))
 
 
-def test_numpy_to_raw_rejects_float32():
-    # MM's createImage cannot build a float image, so float32 is rejected with a
-    # message that names float32 (image_to_numpy produces it for 32-bit gray).
-    with pytest.raises(TypeError, match="float32"):
-        start_mm._numpy_to_raw(np.zeros((2, 2), dtype=np.float32))
+def test_numpy_to_raw_32bit_float_gray():
+    # float32 grayscale -> Java float[] (bpp 4, 1 comp); no sign reinterpretation.
+    arr = np.array([[1.5, 2.5, 3.5], [-4.5, 0.0, 1e6]], dtype=np.float32)
+    flat, w, h, bpp, comps = start_mm._numpy_to_raw(arr)
+    assert (w, h, bpp, comps) == (3, 2, 4, 1)
+    assert flat.dtype == np.float32
+    assert list(flat) == list(arr.reshape(-1))
 
 
 def test_numpy_to_raw_rgb_packs_to_bgra():
@@ -160,6 +162,7 @@ def test_roundtrip_gray_and_rgb():
     for arr, reported in (
         (np.array([[1, 2, 3], [4, 5, 6]], dtype=np.uint8), 1),
         (np.array([[0, 40000], [65535, 123]], dtype=np.uint16), 1),
+        (np.array([[1.5, -2.5], [3.5, 4.5]], dtype=np.float32), 1),
         (np.array([[[30, 20, 10], [1, 2, 3]]], dtype=np.uint8), 3),  # (1,2,3) RGB
     ):
         flat, w, h, bpp, comps = start_mm._numpy_to_raw(arr)

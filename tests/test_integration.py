@@ -211,10 +211,13 @@ def test_snap_returns_numpy_for_each_pixel_type():
 def test_numpy_to_image_roundtrips_each_pixel_type():
     """End-to-end through the real DataManager.createImage path:
 
-      * Supported types (8bit, 16bit gray, 32bitRGB) must round-trip exactly:
-        snap -> numpy_to_image -> image_to_numpy recovers the original array.
-      * Unsupported types (32bit float, 64bitRGB / uint16 RGB) must be rejected by
-        numpy_to_image with a TypeError — MM's createImage cannot build them.
+      * Supported types (8bit, 16bit, 32bit-float gray, 32bitRGB) must round-trip
+        exactly: snap -> numpy_to_image -> image_to_numpy recovers the original.
+      * Unsupported 64bitRGB (uint16 RGB) must be rejected by numpy_to_image with a
+        TypeError — MM has no 16-bit-per-component RGB PixelType.
+
+    (32bit float requires a patched MM whose DefaultDataManager.createImage clones
+    float[]; on stock MM that case would raise instead of round-tripping.)
     """
     proc = _run(
         """
@@ -226,7 +229,7 @@ def test_numpy_to_image_roundtrips_each_pixel_type():
             core.loadSystemConfiguration(str(mm_root / "MMConfig_demo.cfg"))
         cam = core.getCameraDevice()
         data = studio.data()
-        SUPPORTED = {"8bit", "16bit", "32bitRGB"}
+        SUPPORTED = {"8bit", "16bit", "32bit", "32bitRGB"}
         for pt in ("8bit", "16bit", "32bit", "32bitRGB", "64bitRGB"):
             core.setProperty(cam, "PixelType", pt)
             core.waitForDevice(cam)

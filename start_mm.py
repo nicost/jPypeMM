@@ -457,24 +457,25 @@ def _raw_to_numpy(raw, width: int, height: int, n_components: int, copy: bool):
 # --- numpy -> Image conversion (inverse of the above) -------------------------
 #
 # DataManager.createImage(pixels, width, height, bytesPerPixel, numComponents,
-# coords, metadata) takes a Java array of *unsigned* pixel data. The supported
-# types are narrower than image_to_numpy produces, because two MM layers disagree:
-#   * DefaultDataManager.createImage clones the array and accepts byte[]/short[]/int[]
-#   * the DefaultImage constructor accepts byte[]/short[]/float[]
-# The intersection is byte[] and short[] only. So createImage can make:
-#   - 8-bit gray  (uint8  -> byte[],  bpp 1, 1 comp)
-#   - 16-bit gray (uint16 -> short[], bpp 2, 1 comp)
-#   - 8-bit RGB   (uint8  -> byte[],  bpp 4, 3 comp; packed BGRA, RGB32)
-# It CANNOT make float32 (createImage won't clone a float[]) or 16-bit RGB (MM has
-# no 16-bit-per-component RGB PixelType) — those are rejected up front.
+# coords, metadata) takes a Java byte[]/short[]/float[] of pixel data. createImage
+# can make:
+#   - 8-bit gray  (uint8   -> byte[],  bpp 1, 1 comp)
+#   - 16-bit gray (uint16  -> short[], bpp 2, 1 comp)
+#   - 32-bit gray (float32 -> float[], bpp 4, 1 comp; GRAY32)
+#   - 8-bit RGB   (uint8   -> byte[],  bpp 4, 3 comp; packed BGRA, RGB32)
+# It CANNOT make 16-bit RGB (MM has no 16-bit-per-component RGB PixelType) — that
+# is rejected up front. (float32 RGB support required a patch to MM's
+# DefaultDataManager.createImage to clone float[]; older MM builds reject float[].)
 #
 # As in image_to_numpy, we reverse the BGRA packing and the signed/unsigned
 # reinterpretation: Java has no unsigned types, so a uint16/uint8 array is
 # .view()ed as the same-width *signed* dtype before JArray.of() hands it to the
-# JVM (the bit pattern is preserved). One copy (numpy -> JVM heap) is unavoidable.
+# JVM (the bit pattern is preserved). float32 needs no reinterpretation (IEEE
+# float maps straight to Java float[]). One copy (numpy -> JVM heap) is unavoidable.
 _DTYPE_TO_SIGNED = {
-    np.dtype(np.uint8): np.int8,    # -> Java byte[]
-    np.dtype(np.uint16): np.int16,  # -> Java short[]
+    np.dtype(np.uint8): np.int8,       # -> Java byte[]
+    np.dtype(np.uint16): np.int16,     # -> Java short[]
+    np.dtype(np.float32): np.float32,  # -> Java float[] (no sign reinterpretation)
 }
 
 
@@ -486,9 +487,9 @@ def numpy_to_image(data, array, coords=None, metadata=None):
     (height, width, 3) in R,G,B order becomes an RGB Image (repacked to MM's BGRA
     layout with a zero alpha).
 
-    Supported dtypes are constrained by what MM's createImage can build: uint8 or
-    uint16 for grayscale, and uint8 only for RGB. float32 and 16-bit RGB are NOT
-    supported by MM and raise TypeError (see the module note above).
+    Supported dtypes follow what MM's createImage can build: uint8/uint16/float32
+    for grayscale, and uint8 only for RGB. 16-bit RGB is not supported by MM and
+    raises TypeError (see the module note above).
 
     If ``coords``/``metadata`` are omitted, blank ones are built (all axes 0).
     One copy is made (numpy -> JVM heap), which is unavoidable.
@@ -515,14 +516,9 @@ def _numpy_to_raw(array):
     arr = np.ascontiguousarray(array)
     signed = _DTYPE_TO_SIGNED.get(arr.dtype)
     if signed is None:
-        # float32 is the common surprise (image_to_numpy produces it for 32-bit
-        # gray), so name it explicitly; MM's createImage cannot build a float image.
-        if arr.dtype == np.dtype(np.float32):
-            raise TypeError(
-                "MM cannot create a float32 image (createImage accepts only 8- and "
-                "16-bit integer pixels); convert to uint8 or uint16 first"
-            )
-        raise TypeError(f"Unsupported numpy dtype {arr.dtype!r}; use uint8 or uint16")
+        raise TypeError(
+            f"Unsupported numpy dtype {arr.dtype!r}; use uint8, uint16, or float32"
+        )
 
     if arr.ndim == 2:
         height, width = arr.shape
@@ -531,9 +527,9 @@ def _numpy_to_raw(array):
         flat = arr.reshape(-1)
     elif arr.ndim == 3 and arr.shape[2] == 3:
         if arr.dtype != np.dtype(np.uint8):
-            # MM's only RGB PixelType is RGB32 (8-bit); there is no 16-bit RGB.
+            # MM's only RGB PixelType is RGB32 (8-bit); there is no float or 16-bit RGB.
             raise TypeError(
-                f"RGB images must be uint8 (MM has no 16-bit RGB), not {arr.dtype}"
+                f"RGB images must be uint8 (MM has only 8-bit RGB), not {arr.dtype}"
             )
         height, width = arr.shape[:2]
         num_components = 3
