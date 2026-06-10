@@ -5,6 +5,7 @@ description = "Launch ImageJ + Micro-Manager 2.0 in-process from Python via JPyp
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
+    "ipython>=9.14.1",
     "jpype1>=1.7.1",
     "ndv[qt]>=0.5.0",
     "numpy>=2.4.6",

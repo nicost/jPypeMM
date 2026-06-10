@@ -159,10 +159,32 @@ named layers). To show a stack, give it one N-d array and drive the axes:
 Multi-channel display (channel_mode / channel_axis / luts) is configured on
 `viewer.display_model` — see `ndv.models.ArrayDisplayModel`.
 
-**REPL note:** in a plain `python -i` prompt nothing pumps the Qt event loop while you type, so
-the window can look frozen between commands; `view()`/`refresh()` pump it once per call so your
-updates appear. For continuous interactivity (dragging sliders), call `refresh()` after
-interacting, or use `ndv.run_app()` (blocking) when you're done issuing commands.
+**For continuous interactivity, use the IPython launcher** (below): with Qt event-loop
+integration the ndv window stays live while you type — no manual `refresh()` needed.
+
+In a plain `python -i` prompt (no Qt integration) nothing pumps the Qt event loop while you
+type, so the window can look frozen between commands; there `view()`/`refresh()` pump it once
+per call so your updates appear.
+
+## Interactive shell with live Qt windows (recommended)
+
+`imm.py` launches MM and drops you into **IPython with Qt event-loop integration** (`%gui qt`),
+so ndv (and MM's Swing) windows stay continuously responsive at the prompt:
+
+```powershell
+uv run python imm.py                 # shows MM's startup dialog (default)
+uv run python imm.py --skip-intro    # suppress the dialog (persisted; automation)
+```
+
+`studio`, `core`, and the helpers (`snap`, `view`, `refresh`, `image_to_numpy`, `ndv`, and the
+module as `mm`) are already in scope:
+
+```python
+In [1]: viewer = view(snap(studio))     # window stays live, no refresh() needed
+In [2]: viewer.data = snap(studio)      # updates appear immediately
+```
+
+Type `exit()` / Ctrl-D to quit (the clean-exit handler releases MM's profile lock first).
 
 `view(array)` raises if ndv's Qt/graphics backend failed to import. The ndv viewer (Qt) runs
 alongside MM's Swing windows in the same process.
