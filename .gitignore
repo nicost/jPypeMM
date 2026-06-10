@@ -15,5 +15,9 @@ CoreLogs/
 # JVM fatal-error crash dumps (e.g. from a killed/timed-out test launch)
 hs_err_pid*.log
 
+# Editor swap/backup files
+*.swp
+*~
+
 # Claude Code harness-local state
 .claude/

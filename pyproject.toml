@@ -5,16 +5,62 @@ description = "Launch ImageJ + Micro-Manager 2.0 in-process from Python via JPyp
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
+    "cellpose>=4.1.1",
     "ipython>=9.14.1",
     "jpype1>=1.7.1",
     "ndv[qt]>=0.5.0",
     "numpy>=2.4.6",
+    "scikit-image>=0.26.0",
+]
+
+[project.optional-dependencies]
+# PyTorch backend selection. cellpose pulls in torch/torchvision; pick the build
+# per machine with `uv sync --extra cpu` OR `uv sync --extra cu` (mutually
+# exclusive, see [tool.uv] conflicts below). uv cannot detect a GPU at lock time,
+# so this is a per-machine choice, not automatic.
+#   - cpu: portable, no CUDA, works everywhere (incl. macOS, CPU-only hosts).
+#   - cu : CUDA 12.6 wheels (cu126) for NVIDIA GPUs. cu126 is the build that
+#          carries the same torch 2.12.x as the CPU side for win_amd64/cp313, so
+#          there is no version skew between the two extras.
+cpu = [
+    "torch>=2.12.0",
+    "torchvision>=0.27.0",
+]
+cu = [
+    "torch>=2.12.0",
+    "torchvision>=0.27.0",
 ]
 
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
 ]
+
+[tool.uv]
+# A given install resolves with at most one of these extras.
+conflicts = [
+    [{ extra = "cpu" }, { extra = "cu" }],
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu126", extra = "cu" },
+]
+torchvision = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu126", extra = "cu" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
 
 [tool.pytest.ini_options]
 # start_mm.py lives at the project root (not a package), so put the root on
