@@ -12,5 +12,8 @@ wheels/
 # Micro-Manager writes its core log to the working directory at runtime
 CoreLogs/
 
+# JVM fatal-error crash dumps (e.g. from a killed/timed-out test launch)
+hs_err_pid*.log
+
 # Claude Code harness-local state
 .claude/

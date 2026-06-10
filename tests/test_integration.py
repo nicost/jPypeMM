@@ -11,12 +11,17 @@ the test session.
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
+from pathlib import Path
 
 import pytest
+
+import start_mm
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("JPYPEMM_RUN_INTEGRATION") != "1",
@@ -34,43 +39,39 @@ def _run(script: str, timeout: int = 120) -> subprocess.CompletedProcess:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _restore_intro_flags():
-    """Snapshot MM's IntroDlg skip flags before the suite and restore them after.
+def _restore_intro_flags(tmp_path_factory):
+    """Snapshot the MM default profile before the suite and restore it after.
 
-    These tests intentionally persist the skip flags to the user's MM profile
-    (to suppress the modal dialog). This autouse fixture undoes that change once
-    the session ends — even on failure — so the user's normal MM launches behave
-    as they did before the tests ran. Snapshot/restore run in subprocesses since
-    only they can host the JVM.
+    The tests set the IntroDlg skip flags in the user's default profile so the
+    modal startup dialog doesn't block automated launches. That is a real on-disk
+    mutation, so it MUST be reverted no matter how the suite ends — pass, assertion
+    failure, or crash. suppress/restore_intro_dialog are pure-Python JSON edits
+    (no JVM, no profile write lock — see start_mm for why), so this fixture runs
+    them in-process, with two safeguards:
+
+      * The snapshot (the verbatim prior profile text) is written to a file the
+        instant it is captured, so teardown can recover it even if the in-memory
+        value is lost.
+      * Restore runs in a finally block and is *verified* (we re-read the file and
+        assert it matches the snapshot), raising loudly rather than silently
+        leaving the user's profile mutated.
     """
-    snap = _run(
-        """
-        import json, sys, start_mm
-        start_mm.start_jvm(start_mm.find_mm_root())
-        saved = start_mm.suppress_intro_dialog()  # also captures prior values
-        # Undo immediately so the snapshot reflects the PRE-test state, which we
-        # re-apply in teardown.
-        sys.stdout.write("SAVED:" + json.dumps(saved) + "\\n")
-        sys.stdout.flush()
-        import os as _os; _os._exit(0)
-        """,
-        timeout=60,
-    )
-    saved_json = ""
-    for line in snap.stdout.splitlines():
-        if line.startswith("SAVED:"):
-            saved_json = line[len("SAVED:"):]
-    yield
-    if saved_json:
-        _run(
-            f"""
-            import json, start_mm
-            start_mm.start_jvm(start_mm.find_mm_root())
-            start_mm.restore_intro_dialog(json.loads({saved_json!r}))
-            import os as _os; _os._exit(0)
-            """,
-            timeout=60,
-        )
+    saved = start_mm.suppress_intro_dialog()  # captures prior text, sets skip flags
+    snapshot_file = tmp_path_factory.mktemp("mm_profile") / "profile_snapshot.json"
+    snapshot_file.write_text(json.dumps(saved), encoding="utf-8")
+
+    try:
+        yield
+    finally:
+        saved = json.loads(snapshot_file.read_text(encoding="utf-8"))
+        start_mm.restore_intro_dialog(saved)
+        # Restoring the user's profile is not optional — verify and surface failure.
+        if saved.get("existed", True):
+            current = Path(saved["path"]).read_text(encoding="utf-8")
+            assert current == saved["text"], (
+                "FAILED to restore the MM default profile — it may be left with the "
+                f"IntroDlg skip flags enabled. Profile: {saved['path']}"
+            )
 
 
 def test_launch_reports_core_version_and_exits_cleanly():
@@ -116,9 +117,13 @@ def test_quiet_mode_keeps_stderr_logging_disabled():
 
 def test_skip_intro_launches_without_dialog():
     """With skip_intro=True the modal IntroDlg must not appear: the launch
-    completes with no human input, no IntroDlg window is visible, and MM comes
-    up with only the Core device. A bounded subprocess timeout is the hang guard
-    — before the fix, MMStudio blocks on the modal dialog and this times out."""
+    completes with no human input and no IntroDlg window is visible. A bounded
+    subprocess timeout is the hang guard — before the fix, MMStudio blocked on the
+    modal dialog and this timed out.
+
+    We assert only that the Core is up and no IntroDlg is showing; the exact device
+    list depends on whatever hardware config the user's profile last remembered, so
+    it isn't checked here."""
     proc = _run(
         """
         import sys, start_mm
@@ -138,37 +143,24 @@ def test_skip_intro_launches_without_dialog():
     assert proc.returncode == 0, proc.stderr[-2000:]
     assert "OK" in proc.stdout
     assert "INTRO_WINDOWS:0" in proc.stdout
-    assert "DEVICES:Core" in proc.stdout
+    assert "DEVICES:" in proc.stdout and "Core" in proc.stdout
 
 
 def test_skip_intro_persists_flags_to_profile():
-    """suppress_intro_dialog must persist both skip flags to the default profile
-    JSON on disk (this is what MMStudio re-reads to gate the dialog)."""
-    proc = _run(
-        """
-        import sys, start_mm
-        start_mm.find_mm_root()
-        start_mm.start_jvm(start_mm.find_mm_root())
-        start_mm.suppress_intro_dialog()
-        print("SEEDED")
-        sys.stdout.flush()
-        import os as _os; _os._exit(0)
-        """,
-        timeout=60,
-    )
-    assert proc.returncode == 0, proc.stderr[-2000:]
-    assert "SEEDED" in proc.stdout
+    """suppress_intro_dialog must set both skip flags to true in the default
+    profile JSON on disk (this is what MMStudio re-reads to gate the dialog).
 
-    profile = os.path.join(
-        os.environ["LOCALAPPDATA"],
-        "Micro-Manager",
-        "UserProfiles",
-        "Default_User-00000000-0000-0000-0000-000000000000.json",
-    )
-    assert os.path.isfile(profile), profile
-    text = open(profile, encoding="utf-8").read()
-    assert "SKIP_PROFILE_SELECTION_AT_STARTUP" in text
-    assert "SKIP_CONFIG_SELECTION_AT_STARTUP" in text
+    Pure-Python now, so no JVM/subprocess is needed. The session fixture has
+    already set the flags, so this asserts the resulting on-disk state directly.
+    """
+    profile = start_mm.default_profile_path()
+    assert profile.is_file(), profile
+    text = profile.read_text(encoding="utf-8")
+    for flag in ("SKIP_PROFILE_SELECTION_AT_STARTUP", "SKIP_CONFIG_SELECTION_AT_STARTUP"):
+        m = re.search(
+            r'"' + flag + r'"\s*:\s*\{.*?"scalar"\s*:\s*(true|false)', text, re.DOTALL
+        )
+        assert m is not None and m.group(1) == "true", f"{flag} not set true"
 
 
 def test_snap_returns_numpy_for_each_pixel_type():

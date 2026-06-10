@@ -10,7 +10,9 @@ Run interactively so the GUI stays open and the references stay live::
 """
 from __future__ import annotations
 
+import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -146,95 +148,157 @@ def _redirect_java_streams_to_null() -> None:
     jpype.java.lang.System.setErr(devnull)
 
 
-def suppress_intro_dialog() -> None:
-    """Seed the MM user profiles so MMStudio skips its modal startup dialog.
+# MM's IntroDlg skip flags live in the default profile's JSON on disk, under
+#   "map" -> "org.micromanager.internal.StartupSettings" -> "scalar" ->
+#       SKIP_CONFIG_SELECTION_AT_STARTUP / SKIP_PROFILE_SELECTION_AT_STARTUP.
+# We set them by editing that JSON directly in Python — NOT via the Java
+# UserProfileAdmin API. UserProfileAdmin.create() takes MM's UserProfileWriteLock
+# and never releases it (only on process death); doing that in our JVM makes
+# MMStudio's own startup admin collide with the held lock and pop a blocking
+# "Failed to acquire User Profile write lock" modal. MMStudio re-reads the JSON
+# from disk at startup, so a plain text write is all that's needed and no lock is
+# ever taken by us.
+_STARTUP_SETTINGS_KEY = "org.micromanager.internal.StartupSettings"
+_DEFAULT_PROFILE_UUID = "00000000-0000-0000-0000-000000000000"
 
-    On launch MMStudio normally shows IntroDlg (the "splash screen" where you
-    pick a user profile + hardware config and click OK), which blocks until a
-    human clicks OK — fatal for automated/headless launches. MMStudio's init
-    gate is:
 
-        StartupSettings.create(admin.getNonSavingProfile(uuid))
-                       .shouldSkipUserInteractionWithSplashScreen()
+def mm_profiles_dir() -> Path:
+    """Directory holding MM's per-user profile JSON files."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return Path(base) / "Micro-Manager" / "UserProfiles"
 
-    which is true only when BOTH the profile-selection and config-selection skip
-    flags are set. The gate re-reads the profile JSON from disk, so we set both
-    flags and force a synchronous flush (DefaultUserProfile.close()) before the
-    plugin loads. Seeding both the default and current profile UUIDs avoids any
-    ambiguity over which one MMStudio resolves.
+
+def default_profile_path() -> Path:
+    """Path to MM's default user-profile JSON (the all-zeros-UUID profile).
+
+    MM's default profile always carries the all-zeros UUID; its file is named
+    ``Default_User-<uuid>.json``. Resolved from Index.json when possible, else the
+    conventional filename.
+    """
+    profiles = mm_profiles_dir()
+    index = profiles / "Index.json"
+    if index.exists():
+        try:
+            data = json.loads(index.read_text(encoding="utf-8"))
+            for entry in data["map"]["Profiles"]["array"]:
+                if entry.get("UUID", {}).get("scalar") == _DEFAULT_PROFILE_UUID:
+                    return profiles / entry["File"]["scalar"]
+        except (ValueError, KeyError):
+            pass  # fall through to the conventional name
+    return profiles / f"Default_User-{_DEFAULT_PROFILE_UUID}.json"
+
+
+def suppress_intro_dialog():
+    """Edit the default profile JSON so MMStudio skips its modal startup dialog.
+
+    On launch MMStudio normally shows IntroDlg (pick a profile + hardware config,
+    click OK), which blocks until a human clicks — fatal for automated launches.
+    The gate is satisfied when BOTH skip flags are true in the default profile's
+    JSON, which MMStudio re-reads from disk at startup. We set them with a targeted
+    text edit (see module note above on why not via UserProfileAdmin).
+
+    Pure Python, no JVM required. Returns an opaque ``saved`` token (the prior
+    on-disk text) to pass to restore_intro_dialog() for an exact revert.
 
     NOTE: this is a PERSISTED, per-machine setting — it also affects normal MM
-    launches until re-enabled in MM's dialog. It is opt-in (tests only); call it
-    AFTER start_jvm() and BEFORE launch_imagej_with_mm().
-
-    Returns the prior flag values, keyed by profile-UUID string, so the change
-    can be undone with restore_intro_dialog(saved).
+    launches until reverted. Opt-in (tests only).
     """
-    from org.micromanager.internal import StartupSettings
-    from org.micromanager.profile.internal import UserProfileAdmin
+    path = default_profile_path()
+    original = path.read_text(encoding="utf-8")
+    saved = {"path": str(path), "text": original, "existed": path.exists()}
 
-    admin = UserProfileAdmin.create()
-    uuids = {admin.getUUIDOfDefaultProfile(), admin.getUUIDOfCurrentProfile()}
-
-    saved: dict[str, tuple[bool, bool]] = {}
-    for uuid in uuids:
-        prior = StartupSettings.create(admin.getNonSavingProfile(uuid))
-        saved[str(uuid)] = (
-            bool(prior.shouldSkipProfileSelectionAtStartup()),
-            bool(prior.shouldSkipConfigSelectionAtStartup()),
-        )
-    _write_intro_skip_flags(admin, uuids, profile_skip=True, config_skip=True)
-
-    # Verify the gate exactly as MMStudio will read it (fresh non-saving read).
-    for uuid in uuids:
-        p = admin.getNonSavingProfile(uuid)
-        if not StartupSettings.create(p).shouldSkipUserInteractionWithSplashScreen():
-            raise RuntimeError(f"IntroDlg skip was not persisted for profile {uuid}")
+    updated = _set_skip_flags_in_text(original, skip=True)
+    if updated != original:
+        _atomic_write(path, updated)
     return saved
 
 
-def restore_intro_dialog(saved: "dict[str, tuple[bool, bool]]") -> None:
-    """Undo suppress_intro_dialog(), restoring each profile's prior skip flags.
+def restore_intro_dialog(saved) -> None:
+    """Undo suppress_intro_dialog(), restoring the profile's exact prior content.
 
-    Pass the dict returned by suppress_intro_dialog(). This re-enables MM's
-    startup dialog for normal launches if it was showing before.
+    Pass the token returned by suppress_intro_dialog(). Writes the captured prior
+    text back verbatim, re-enabling MM's startup dialog if it was showing before.
     """
-    import java.util.UUID as UUID
+    path = Path(saved["path"])
+    if not saved.get("existed", True):
+        # The profile did not exist before we touched it — remove what we created.
+        if path.exists():
+            path.unlink()
+        return
+    if path.read_text(encoding="utf-8") != saved["text"]:
+        _atomic_write(path, saved["text"])
 
-    from org.micromanager.internal import StartupSettings
-    from org.micromanager.profile.internal import UserProfileAdmin
 
-    admin = UserProfileAdmin.create()
-    for uuid_str, (profile_skip, config_skip) in saved.items():
-        _write_intro_skip_flags(
-            admin, [UUID.fromString(uuid_str)], profile_skip, config_skip
+def _set_skip_flags_in_text(text: str, skip: bool) -> str:
+    """Return ``text`` with both IntroDlg skip flags set to ``skip``.
+
+    The two SKIP_*_AT_STARTUP keys are unique in the file, so each flag's boolean
+    "scalar" is rewritten in place by name — no need to match (and risk mangling)
+    the enclosing StartupSettings block. If neither flag is present, a complete
+    block is inserted into the top-level "map" object. Everything else in the file
+    is left byte-for-byte unchanged, and re-applying the same value is a no-op.
+    """
+    value = "true" if skip else "false"
+    total = 0
+    for flag in ("SKIP_CONFIG_SELECTION_AT_STARTUP", "SKIP_PROFILE_SELECTION_AT_STARTUP"):
+        # Match: "FLAG": { "type": "BOOLEAN", "scalar": <bool> } — value only.
+        text, n = re.subn(
+            r'("' + re.escape(flag) + r'"\s*:\s*\{[^{}]*?"scalar"\s*:\s*)(?:true|false)',
+            lambda m: m.group(1) + value,
+            text,
         )
-    # Confirm each profile now reads back the requested values.
-    for uuid_str, (profile_skip, config_skip) in saved.items():
-        ss = StartupSettings.create(admin.getNonSavingProfile(UUID.fromString(uuid_str)))
-        if (
-            bool(ss.shouldSkipProfileSelectionAtStartup()) != profile_skip
-            or bool(ss.shouldSkipConfigSelectionAtStartup()) != config_skip
-        ):
-            raise RuntimeError(f"IntroDlg flags not restored for profile {uuid_str}")
+        total += n
+    if total == 0:
+        # Neither flag present (fresh profile) — add the whole StartupSettings block.
+        return _insert_startup_block(text, skip)
+    return text
 
 
-def _write_intro_skip_flags(admin, uuids, profile_skip: bool, config_skip: bool) -> None:
-    """Set both IntroDlg skip flags on each profile and flush synchronously."""
-    from org.micromanager.internal import StartupSettings
+def _insert_startup_block(text: str, skip: bool) -> str:
+    """Insert a fresh StartupSettings block as the first entry of "map": { ... }."""
+    m = re.search(r'"map"\s*:\s*\{', text)
+    if m is None:
+        raise RuntimeError("profile JSON has no top-level 'map' object to edit")
+    insert_at = m.end()
+    # Indent one level past "map" (its entries sit at a deeper indent).
+    block = _startup_block("        ", skip)
+    return text[:insert_at] + "\n" + block + "," + text[insert_at:]
 
-    listener = jpype.JProxy(
-        "java.beans.ExceptionListener", dict={"exceptionThrown": lambda e: None}
+
+def _startup_block(indent: str, skip: bool) -> str:
+    """Render a complete StartupSettings property-map block at ``indent``."""
+    value = "true" if skip else "false"
+    inner = indent + "  "
+    return (
+        f'{indent}"{_STARTUP_SETTINGS_KEY}": {{\n'
+        f'{inner}"type": "PROPERTY_MAP",\n'
+        f'{inner}"scalar": {{\n'
+        f'{inner}  "SKIP_CONFIG_SELECTION_AT_STARTUP": {{\n'
+        f'{inner}    "type": "BOOLEAN",\n'
+        f'{inner}    "scalar": {value}\n'
+        f'{inner}  }},\n'
+        f'{inner}  "SKIP_PROFILE_SELECTION_AT_STARTUP": {{\n'
+        f'{inner}    "type": "BOOLEAN",\n'
+        f'{inner}    "scalar": {value}\n'
+        f'{inner}  }}\n'
+        f'{inner}}}\n'
+        f'{indent}}}'
     )
-    for uuid in uuids:
-        profile = admin.getAutosavingProfile(uuid, listener)
-        settings = StartupSettings.create(profile)
-        settings.setSkipProfileSelectionAtStartup(profile_skip)
-        settings.setSkipConfigSelectionAtStartup(config_skip)
-        try:
-            profile.close()  # synchronous flush to disk — required, not the async saver
-        except jpype.JException:
-            pass  # close() declares InterruptedException; the write still happened
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write text to path atomically (temp file + os.replace), flushed to disk."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 def launch_imagej_with_mm(
