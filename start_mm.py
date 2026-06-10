@@ -491,7 +491,14 @@ def numpy_to_image(data, array, coords=None, metadata=None):
     for grayscale, and uint8 only for RGB. 16-bit RGB is not supported by MM and
     raises TypeError (see the module note above).
 
-    If ``coords``/``metadata`` are omitted, blank ones are built (all axes 0).
+    If ``coords`` is omitted a blank one is built (all axes 0). If ``metadata`` is
+    omitted, metadata carrying the image's bit depth is built — this is REQUIRED
+    for the image to display correctly: MM's display initializes its contrast
+    range from Metadata.getBitDepth(), and a null bit depth makes the contrast
+    maximum default to Long.MAX_VALUE, rendering the image black (blank viewer).
+    Pass your own ``metadata`` to add fields, but include a bitDepth or the view
+    will be blank.
+
     One copy is made (numpy -> JVM heap), which is unavoidable.
     """
     flat_signed, width, height, bytes_per_pixel, num_components = _numpy_to_raw(array)
@@ -499,7 +506,10 @@ def numpy_to_image(data, array, coords=None, metadata=None):
     if coords is None:
         coords = data.coordsBuilder().build()
     if metadata is None:
-        metadata = data.metadataBuilder().build()
+        # bitDepth = bits per component (uint8->8, uint16->16, float32->32). MM's
+        # display needs this set or it picks a degenerate contrast range -> black.
+        bit_depth = int(np.dtype(array.dtype).itemsize * 8)
+        metadata = data.metadataBuilder().bitDepth(jpype.JInt(bit_depth)).build()
     return data.createImage(
         pixels, width, height, bytes_per_pixel, num_components, coords, metadata
     )
