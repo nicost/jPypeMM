@@ -95,6 +95,78 @@ def test_unsupported_format_raises():
         start_mm.image_to_numpy(img)
 
 
+# --- _numpy_to_raw: numpy -> createImage args (no JVM) -----------------------
+# Mirrors the image_to_numpy tests above. _numpy_to_raw is the JVM-free worker
+# behind numpy_to_image; it returns (flat_signed, width, height,
+# bytes_per_pixel, num_components).
+def test_numpy_to_raw_8bit_gray():
+    arr = np.arange(6, dtype=np.uint8).reshape(2, 3)
+    flat, w, h, bpp, comps = start_mm._numpy_to_raw(arr)
+    assert (w, h, bpp, comps) == (3, 2, 1, 1)
+    assert flat.dtype == np.int8
+    assert list(flat) == list(arr.reshape(-1))
+
+
+def test_numpy_to_raw_16bit_gray_preserves_unsigned():
+    # 40000 > int16 max: the bit pattern must survive as a signed short.
+    arr = np.array([[0, 1000, 40000], [32768, 65535, 12345]], dtype=np.uint16)
+    flat, w, h, bpp, comps = start_mm._numpy_to_raw(arr)
+    assert (w, h, bpp, comps) == (3, 2, 2, 1)
+    assert flat.dtype == np.int16
+    # Reinterpreting back to uint16 must recover the original values.
+    assert list(flat.view(np.uint16)) == list(arr.reshape(-1))
+
+
+def test_numpy_to_raw_rejects_float32():
+    # MM's createImage cannot build a float image, so float32 is rejected with a
+    # message that names float32 (image_to_numpy produces it for 32-bit gray).
+    with pytest.raises(TypeError, match="float32"):
+        start_mm._numpy_to_raw(np.zeros((2, 2), dtype=np.float32))
+
+
+def test_numpy_to_raw_rgb_packs_to_bgra():
+    # One pixel, RGB = (30, 20, 10) -> packed BGRA = (10, 20, 30, 0).
+    arr = np.array([[[30, 20, 10]]], dtype=np.uint8)
+    flat, w, h, bpp, comps = start_mm._numpy_to_raw(arr)
+    assert (w, h, bpp, comps) == (1, 1, 4, 3)
+    assert list(flat.view(np.uint8)) == [10, 20, 30, 0]  # B, G, R, A
+
+
+def test_numpy_to_raw_rejects_bad_dtype():
+    with pytest.raises(TypeError):
+        start_mm._numpy_to_raw(np.zeros((2, 2), dtype=np.int32))
+
+
+def test_numpy_to_raw_rejects_uint16_rgb():
+    # MM has no 16-bit-per-component RGB PixelType; uint16 RGB must be rejected.
+    with pytest.raises(TypeError, match="RGB"):
+        start_mm._numpy_to_raw(np.zeros((1, 1, 3), dtype=np.uint16))
+
+
+def test_numpy_to_raw_rejects_float_rgb():
+    with pytest.raises(TypeError):
+        start_mm._numpy_to_raw(np.zeros((1, 1, 3), dtype=np.float32))
+
+
+def test_numpy_to_raw_rejects_bad_shape():
+    with pytest.raises(ValueError):
+        start_mm._numpy_to_raw(np.zeros((2, 2, 2), dtype=np.uint8))
+
+
+def test_roundtrip_gray_and_rgb():
+    # numpy -> raw -> _raw_to_numpy must recover the original array. _raw_to_numpy
+    # now derives channel count from the buffer length, so n_components is only a
+    # hint; pass the value MM's Image would report (3 for RGB) to prove it's ignored.
+    for arr, reported in (
+        (np.array([[1, 2, 3], [4, 5, 6]], dtype=np.uint8), 1),
+        (np.array([[0, 40000], [65535, 123]], dtype=np.uint16), 1),
+        (np.array([[[30, 20, 10], [1, 2, 3]]], dtype=np.uint8), 3),  # (1,2,3) RGB
+    ):
+        flat, w, h, bpp, comps = start_mm._numpy_to_raw(arr)
+        back = start_mm._raw_to_numpy(flat, w, h, reported, copy=True)
+        assert np.array_equal(back, arr)
+
+
 # --- snap(): display flag routing --------------------------------------------
 class _FakeImageList:
     def __init__(self, images):

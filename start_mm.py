@@ -437,16 +437,119 @@ def _raw_to_numpy(raw, width: int, height: int, n_components: int, copy: bool):
         raise TypeError(f"Unsupported pixel buffer format {mv.format!r}")
     flat = np.frombuffer(mv, dtype=dtype)  # no further copy
 
-    if n_components == 1:
+    # The number of channels actually present in the buffer is len/(w*h), which is
+    # authoritative. RGB is stored 4-wide (BGRA) even though MM reports it as 3
+    # components — and CMMCore.getNumberOfComponents() (4) and Image.getNumComponents()
+    # (3) disagree for the same data, so we trust the buffer, not n_components.
+    channels = flat.size // (width * height)
+    if channels == 1:
         arr = flat.reshape(height, width)
     else:
-        packed = flat.reshape(height, width, n_components)
+        packed = flat.reshape(height, width, channels)
         arr = packed[:, :, 2::-1]  # BGRA -> R,G,B (drop alpha)
 
     if copy:
         return arr.copy()
     arr.flags.writeable = False
     return arr
+
+
+# --- numpy -> Image conversion (inverse of the above) -------------------------
+#
+# DataManager.createImage(pixels, width, height, bytesPerPixel, numComponents,
+# coords, metadata) takes a Java array of *unsigned* pixel data. The supported
+# types are narrower than image_to_numpy produces, because two MM layers disagree:
+#   * DefaultDataManager.createImage clones the array and accepts byte[]/short[]/int[]
+#   * the DefaultImage constructor accepts byte[]/short[]/float[]
+# The intersection is byte[] and short[] only. So createImage can make:
+#   - 8-bit gray  (uint8  -> byte[],  bpp 1, 1 comp)
+#   - 16-bit gray (uint16 -> short[], bpp 2, 1 comp)
+#   - 8-bit RGB   (uint8  -> byte[],  bpp 4, 3 comp; packed BGRA, RGB32)
+# It CANNOT make float32 (createImage won't clone a float[]) or 16-bit RGB (MM has
+# no 16-bit-per-component RGB PixelType) — those are rejected up front.
+#
+# As in image_to_numpy, we reverse the BGRA packing and the signed/unsigned
+# reinterpretation: Java has no unsigned types, so a uint16/uint8 array is
+# .view()ed as the same-width *signed* dtype before JArray.of() hands it to the
+# JVM (the bit pattern is preserved). One copy (numpy -> JVM heap) is unavoidable.
+_DTYPE_TO_SIGNED = {
+    np.dtype(np.uint8): np.int8,    # -> Java byte[]
+    np.dtype(np.uint16): np.int16,  # -> Java short[]
+}
+
+
+def numpy_to_image(data, array, coords=None, metadata=None):
+    """Convert a numpy array to an org.micromanager.data.Image.
+
+    Inverse of image_to_numpy. ``data`` is a DataManager (i.e. ``studio.data()``).
+    A 2-D array (height, width) becomes a grayscale Image; a 3-D array
+    (height, width, 3) in R,G,B order becomes an RGB Image (repacked to MM's BGRA
+    layout with a zero alpha).
+
+    Supported dtypes are constrained by what MM's createImage can build: uint8 or
+    uint16 for grayscale, and uint8 only for RGB. float32 and 16-bit RGB are NOT
+    supported by MM and raise TypeError (see the module note above).
+
+    If ``coords``/``metadata`` are omitted, blank ones are built (all axes 0).
+    One copy is made (numpy -> JVM heap), which is unavoidable.
+    """
+    flat_signed, width, height, bytes_per_pixel, num_components = _numpy_to_raw(array)
+    pixels = jpype.JArray.of(flat_signed)
+    if coords is None:
+        coords = data.coordsBuilder().build()
+    if metadata is None:
+        metadata = data.metadataBuilder().build()
+    return data.createImage(
+        pixels, width, height, bytes_per_pixel, num_components, coords, metadata
+    )
+
+
+def _numpy_to_raw(array):
+    """Shared core: turn a shaped numpy array into createImage's raw arguments.
+
+    Returns (flat_signed, width, height, bytes_per_pixel, num_components), where
+    flat_signed is a 1-D numpy array viewed as the signed dtype the JVM expects
+    (see the module note above). No JPype/DataManager dependency, so it is
+    unit-testable without a JVM. See numpy_to_image for the format rules.
+    """
+    arr = np.ascontiguousarray(array)
+    signed = _DTYPE_TO_SIGNED.get(arr.dtype)
+    if signed is None:
+        # float32 is the common surprise (image_to_numpy produces it for 32-bit
+        # gray), so name it explicitly; MM's createImage cannot build a float image.
+        if arr.dtype == np.dtype(np.float32):
+            raise TypeError(
+                "MM cannot create a float32 image (createImage accepts only 8- and "
+                "16-bit integer pixels); convert to uint8 or uint16 first"
+            )
+        raise TypeError(f"Unsupported numpy dtype {arr.dtype!r}; use uint8 or uint16")
+
+    if arr.ndim == 2:
+        height, width = arr.shape
+        num_components = 1
+        bytes_per_pixel = arr.itemsize
+        flat = arr.reshape(-1)
+    elif arr.ndim == 3 and arr.shape[2] == 3:
+        if arr.dtype != np.dtype(np.uint8):
+            # MM's only RGB PixelType is RGB32 (8-bit); there is no 16-bit RGB.
+            raise TypeError(
+                f"RGB images must be uint8 (MM has no 16-bit RGB), not {arr.dtype}"
+            )
+        height, width = arr.shape[:2]
+        num_components = 3
+        bytes_per_pixel = 4 * arr.itemsize  # MM packs RGB as 4-channel BGRA (RGB32)
+        packed = np.zeros((height, width, 4), dtype=arr.dtype)
+        packed[:, :, 0] = arr[:, :, 2]  # B
+        packed[:, :, 1] = arr[:, :, 1]  # G
+        packed[:, :, 2] = arr[:, :, 0]  # R
+        # packed[:, :, 3] stays 0 (alpha)
+        flat = packed.reshape(-1)
+    else:
+        raise ValueError(
+            f"Expected (h, w) grayscale or (h, w, 3) RGB array, got shape {arr.shape}"
+        )
+
+    return flat.view(signed), width, height, bytes_per_pixel, num_components
 
 
 def snap_core(core, copy: bool = False) -> "np.ndarray":

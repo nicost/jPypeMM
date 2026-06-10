@@ -86,6 +86,7 @@ def main() -> None:
         "view": start_mm.view,
         "refresh": start_mm.refresh,
         "image_to_numpy": start_mm.image_to_numpy,
+        "numpy_to_image": start_mm.numpy_to_image,
     }
     if start_mm.ndv is not None:
         user_ns["ndv"] = start_mm.ndv

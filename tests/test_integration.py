@@ -206,3 +206,50 @@ def test_snap_returns_numpy_for_each_pixel_type():
     pt_lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("PT ")]
     assert len(pt_lines) == 5, proc.stdout
     assert all("OK=True" in ln for ln in pt_lines), proc.stdout
+
+
+def test_numpy_to_image_roundtrips_each_pixel_type():
+    """End-to-end through the real DataManager.createImage path:
+
+      * Supported types (8bit, 16bit gray, 32bitRGB) must round-trip exactly:
+        snap -> numpy_to_image -> image_to_numpy recovers the original array.
+      * Unsupported types (32bit float, 64bitRGB / uint16 RGB) must be rejected by
+        numpy_to_image with a TypeError — MM's createImage cannot build them.
+    """
+    proc = _run(
+        """
+        import sys, numpy as np, start_mm
+        start_mm._install_clean_exit()
+        studio, core = start_mm.main(quiet=True, skip_intro=True)
+        mm_root = start_mm.find_mm_root()
+        if "Camera" not in list(core.getLoadedDevices()):
+            core.loadSystemConfiguration(str(mm_root / "MMConfig_demo.cfg"))
+        cam = core.getCameraDevice()
+        data = studio.data()
+        SUPPORTED = {"8bit", "16bit", "32bitRGB"}
+        for pt in ("8bit", "16bit", "32bit", "32bitRGB", "64bitRGB"):
+            core.setProperty(cam, "PixelType", pt)
+            core.waitForDevice(cam)
+            arr = start_mm.snap_core(core, copy=True)   # writable original
+            if pt in SUPPORTED:
+                img = start_mm.numpy_to_image(data, arr)
+                back = start_mm.image_to_numpy(img, copy=True)
+                ok = (back.shape == arr.shape and back.dtype == arr.dtype
+                      and np.array_equal(back, arr))
+                print(f"PT {pt}: roundtrip OK={ok}")
+            else:
+                try:
+                    start_mm.numpy_to_image(data, arr)
+                    print(f"PT {pt}: rejected OK=False (no error raised)")
+                except TypeError:
+                    print(f"PT {pt}: rejected OK=True")
+        print("DONE")
+        sys.stdout.flush()
+        """,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "DONE" in proc.stdout
+    pt_lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("PT ")]
+    assert len(pt_lines) == 5, proc.stdout
+    assert all("OK=True" in ln for ln in pt_lines), proc.stdout
