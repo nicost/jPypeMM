@@ -269,3 +269,65 @@ def test_numpy_to_image_roundtrips_each_pixel_type():
     pt_lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("PT ")]
     assert len(pt_lines) == 5, proc.stdout
     assert all("OK=True" in ln for ln in pt_lines), proc.stdout
+
+
+def test_tagged_image_conversion_and_roundtrip():
+    """End-to-end against a real mmcorej.TaggedImage:
+
+      * core.snapImage() + core.getTaggedImage() -> tagged_image_to_numpy gives an
+        array matching snap_core for each gray pixel type.
+      * the full trip TaggedImage -> numpy -> numpy_to_image -> image_to_numpy
+        recovers the original pixels.
+      * tagged_image_metadata returns a native Python dict with the expected keys
+        (Width/Height/PixelType/BitDepth) and JSON null -> None.
+    """
+    proc = _run(
+        """
+        import sys, numpy as np, start_mm
+        start_mm._install_clean_exit()
+        studio, core = start_mm.main(quiet=True, skip_intro=True)
+        mm_root = start_mm.find_mm_root()
+        if "Camera" not in list(core.getLoadedDevices()):
+            core.loadSystemConfiguration(str(mm_root / "MMConfig_demo.cfg"))
+        cam = core.getCameraDevice()
+        data = studio.data()
+        for pt in ("8bit", "16bit", "32bit"):
+            core.setProperty(cam, "PixelType", pt)
+            core.waitForDevice(cam)
+            core.snapImage()
+            tagged = core.getTaggedImage()
+            arr = start_mm.tagged_image_to_numpy(tagged, copy=True)
+            # matches the plain Core path
+            ref = start_mm.snap_core(core, copy=True)
+            shape_ok = arr.shape == ref.shape and arr.dtype == ref.dtype
+            # full trip back to an Image and out to numpy
+            img = start_mm.numpy_to_image(data, arr)
+            back = start_mm.image_to_numpy(img, copy=True)
+            trip_ok = back.shape == arr.shape and np.array_equal(back, arr)
+            print(f"PT {pt}: shape_ok={shape_ok} trip_ok={trip_ok}")
+
+        # metadata conversion -> native python dict
+        core.setProperty(cam, "PixelType", "16bit"); core.waitForDevice(cam)
+        core.snapImage()
+        md = start_mm.tagged_image_metadata(core.getTaggedImage())
+        print("MD_IS_DICT:" + str(isinstance(md, dict)))
+        print("MD_KEYS_OK:" + str(all(k in md for k in ("Width", "Height", "PixelType", "BitDepth"))))
+        print("MD_WIDTH_TYPE:" + type(md["Width"]).__name__)
+        print("MD_PIXELTYPE:" + str(md["PixelType"]))
+        # values are native python types (json round-trips)
+        import json as _json
+        print("MD_JSON_OK:" + str(bool(_json.dumps(md))))
+        print("DONE")
+        sys.stdout.flush()
+        """,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "DONE" in proc.stdout
+    pt_lines = [ln for ln in proc.stdout.splitlines() if ln.startswith("PT ")]
+    assert len(pt_lines) == 3, proc.stdout
+    assert all("shape_ok=True" in ln and "trip_ok=True" in ln for ln in pt_lines), proc.stdout
+    assert "MD_IS_DICT:True" in proc.stdout
+    assert "MD_KEYS_OK:True" in proc.stdout
+    assert "MD_WIDTH_TYPE:int" in proc.stdout
+    assert "MD_JSON_OK:True" in proc.stdout

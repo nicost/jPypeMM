@@ -87,6 +87,9 @@ def main() -> None:
         "refresh": start_mm.refresh,
         "image_to_numpy": start_mm.image_to_numpy,
         "numpy_to_image": start_mm.numpy_to_image,
+        "tagged_image_to_numpy": start_mm.tagged_image_to_numpy,
+        "tagged_image_metadata": start_mm.tagged_image_metadata,
+        "json_to_python": start_mm.json_to_python,
         "jint": start_mm.jint,
     }
     if start_mm.ndv is not None:

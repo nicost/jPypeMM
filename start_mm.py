@@ -453,6 +453,98 @@ def _raw_to_numpy(raw, width: int, height: int, copy: bool):
     return arr
 
 
+# --- TaggedImage (CMMCore) conversion ----------------------------------------
+#
+# core.snapImage() + core.getTaggedImage() returns an mmcorej.TaggedImage with two
+# public fields: `pix` (a Java byte[]/short[]/float[] — the same buffer types
+# _raw_to_numpy handles) and `tags` (an mmcorej.org.json.JSONObject of metadata:
+# Width, Height, PixelType, BitDepth, PixelSizeUm, ROI, ...). See
+# TaggedImageCreator.createTaggedImage in mmCoreAndDevices/MMCoreJ_wrap.
+
+
+def tagged_image_to_numpy(tagged, copy: bool = False) -> "np.ndarray":
+    """Convert an mmcorej.TaggedImage to a correctly shaped numpy array.
+
+    Reads the pixel buffer from ``tagged.pix`` and Width/Height from ``tagged.tags``.
+    Shape/dtype match image_to_numpy: grayscale -> (height, width); RGB -> packed
+    BGRA reduced to (height, width, 3) in R,G,B order; uint8 / uint16 / float32 per
+    pixel type. Exactly one copy (JVM heap -> numpy); the result is read-only by
+    default — pass copy=True for a writable array.
+    """
+    tags = tagged.tags
+    width = int(_json_scalar(tags.get("Width")))
+    height = int(_json_scalar(tags.get("Height")))
+    return _raw_to_numpy(tagged.pix, width, height, copy)
+
+
+def tagged_image_metadata(tagged) -> dict:
+    """Return a TaggedImage's metadata tags as a native Python dict.
+
+    Convenience wrapper for ``json_to_python(tagged.tags)``.
+    """
+    return json_to_python(tagged.tags)
+
+
+def json_to_python(obj):
+    """Recursively convert an mmcorej.org.json JSONObject/JSONArray to Python.
+
+    JSONObject -> dict, JSONArray -> list, JSON null -> None, and numbers / strings
+    / booleans -> their Python equivalents (JPype with convertStrings=True already
+    yields str for Java String). Detection is duck-typed (keys() for objects,
+    length()+get() for arrays) so it works on the real Java classes and on test
+    fakes alike.
+    """
+    if _is_json_object(obj):
+        return {str(key): json_to_python(obj.get(key)) for key in obj.keys()}
+    if _is_json_array(obj):
+        return [json_to_python(obj.get(i)) for i in range(int(obj.length()))]
+    return _json_scalar(obj)
+
+
+def _is_json_object(obj) -> bool:
+    """True if obj behaves like a JSONObject (has keys() and get())."""
+    return hasattr(obj, "keys") and hasattr(obj, "get") and not _is_json_array(obj)
+
+
+def _is_json_array(obj) -> bool:
+    """True if obj behaves like a JSONArray (length() + get(int), no keys())."""
+    return (
+        hasattr(obj, "length")
+        and hasattr(obj, "get")
+        and not hasattr(obj, "keys")
+    )
+
+
+def _json_scalar(value):
+    """Convert a JSON leaf value to a native Python scalar (or None for JSON null)."""
+    if value is None:
+        return None
+    # org.json's JSON-null is the JSONObject.NULL sentinel; its toString() is "null"
+    # and it is not equal to any real value. Detect it by class name so a genuine
+    # Python/Java string "null" is not misread.
+    cls = getattr(type(value), "__name__", "")
+    if cls == "Null" or value is _json_null_singleton():
+        return None
+    # JPype boxed numbers/booleans need unwrapping; str already arrives as Python str.
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    return value
+
+
+def _json_null_singleton():
+    """The org.json JSONObject.NULL sentinel when the JVM is up, else a sentinel."""
+    if jpype.isJVMStarted():
+        try:
+            return jpype.JClass("mmcorej.org.json.JSONObject").NULL
+        except Exception:
+            pass
+    return object()  # never equal to anything when the JVM/class is unavailable
+
+
 def jint(value):
     """Box a Python int as a Java Integer for MM builder setters.
 
