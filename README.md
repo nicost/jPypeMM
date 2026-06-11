@@ -1,6 +1,6 @@
 # jPypeMM
 
-**This is an experimental repository, at this point in time for experimentation only.  Doch and every aspect of it can change at any point in time. not base other projects on it unless you are ready to maintain a fork of this repo yourself**
+**This is an experimental repository, or experimentation only.  Each and every aspect of it can and will change so do not base other projects on it unless you are ready to maintain a fork of this repo yourself**
 
 Launches **ImageJ** with **Micro-Manager 2.0** loaded as a plugin, in-process from Python
 using [JPype](https://jpype.readthedocs.io). The JVM runs *inside* the Python process via
