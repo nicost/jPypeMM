@@ -39,7 +39,13 @@ def snap_threshold_two_channel(studio, core):
 
     # 2. Otsu threshold (scikit-image). threshold_otsu returns a scalar in the
     #    image's intensity range; the mask is everything at or above it.
-    level = threshold_otsu(original)
+    #    threshold_otsu raises on a constant image (no two distinct values), which
+    #    a dark/saturated/unconfigured camera can produce — fall back to its single
+    #    value so the example still runs (the mask is then all-on).
+    if original.min() == original.max():
+        level = original.min()
+    else:
+        level = threshold_otsu(original)
     # Express the mask in the SAME dtype/scale as the original so the two channels
     # share a pixel type. For integer images use the dtype max as "on"; for float
     # use 1.0. (MM datastores expect a consistent pixel type across the dataset.)
@@ -97,16 +103,6 @@ def main():
 
 
 if __name__ == "__main__":
-    import sys
-    import time
-
     start_mm._install_clean_exit()
     studio, core, store, display = main()
-    if not sys.flags.interactive:
-        print("\nDataViewer is open. Press Ctrl+C to quit.")
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("Shutting down.")
-        start_mm.quit_now()
+    start_mm.hold_open("DataViewer is open. Press Ctrl+C to quit.")

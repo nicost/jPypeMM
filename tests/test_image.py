@@ -157,16 +157,15 @@ def test_numpy_to_raw_rejects_bad_shape():
 
 def test_roundtrip_gray_and_rgb():
     # numpy -> raw -> _raw_to_numpy must recover the original array. _raw_to_numpy
-    # now derives channel count from the buffer length, so n_components is only a
-    # hint; pass the value MM's Image would report (3 for RGB) to prove it's ignored.
-    for arr, reported in (
-        (np.array([[1, 2, 3], [4, 5, 6]], dtype=np.uint8), 1),
-        (np.array([[0, 40000], [65535, 123]], dtype=np.uint16), 1),
-        (np.array([[1.5, -2.5], [3.5, 4.5]], dtype=np.float32), 1),
-        (np.array([[[30, 20, 10], [1, 2, 3]]], dtype=np.uint8), 3),  # (1,2,3) RGB
+    # derives the channel count from the buffer length (not a component count).
+    for arr in (
+        np.array([[1, 2, 3], [4, 5, 6]], dtype=np.uint8),
+        np.array([[0, 40000], [65535, 123]], dtype=np.uint16),
+        np.array([[1.5, -2.5], [3.5, 4.5]], dtype=np.float32),
+        np.array([[[30, 20, 10], [1, 2, 3]]], dtype=np.uint8),  # (1,2,3) RGB
     ):
         flat, w, h, bpp, comps = start_mm._numpy_to_raw(arr)
-        back = start_mm._raw_to_numpy(flat, w, h, reported, copy=True)
+        back = start_mm._raw_to_numpy(flat, w, h, copy=True)
         assert np.array_equal(back, arr)
 
 
@@ -232,3 +231,10 @@ def test_snap_raises_when_live_returns_no_images():
     for live in (_NullLive(), _EmptyLive()):
         with pytest.raises(RuntimeError, match="no images"):
             start_mm.snap(live)
+
+
+def test_snap_raises_clearly_when_live_is_none():
+    # studio.live() is null until the GUI is ready; snap(None) must raise a clear
+    # RuntimeError, not a bare AttributeError on None.snap().
+    with pytest.raises(RuntimeError, match="live is None"):
+        start_mm.snap(None)

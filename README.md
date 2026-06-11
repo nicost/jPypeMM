@@ -141,58 +141,41 @@ GUI state.
 into an `org.micromanager.data.Image` via `DataManager.createImage`. Combined with a RAM
 Datastore and a DataViewer, you can push processed numpy data back into MM's own display.
 
-This snippet (paste it into an interactive session where `studio`/`core` already exist — e.g.
-after `uv run python -i start_mm.py`) snaps an image, computes an Otsu threshold with
-scikit-image, and shows the original and the mask as a **2-channel** dataset in a DataViewer:
+The core moves are: build a RAM datastore, set its `SummaryMetadata` **before** putting
+images, then put one `numpy_to_image(...)` per channel at its channel coordinate, and open a
+DataViewer:
 
 ```python
-import numpy as np
-from skimage.filters import threshold_otsu
-import start_mm
-
 data = studio.data()
-
-# 1. snap
-original = start_mm.snap_core(core, copy=True)
-
-# 2. Otsu mask, in the original's dtype so both channels share a pixel type
-level = threshold_otsu(original)
-on = np.iinfo(original.dtype).max if np.issubdtype(original.dtype, np.integer) else 1.0
-mask = np.where(original >= level, on, 0).astype(original.dtype)
-
-# 3. 2-channel RAM datastore (set summary metadata BEFORE putImage)
-#    imageWidth/imageHeight take a boxed Java Integer; start_mm.jint() converts it.
-h, w = original.shape[:2]
 store = data.createRAMDatastore()
 store.setSummaryMetadata(
     data.summaryMetadataBuilder()
         .channelNames("Original", "Otsu mask")
         .intendedDimensions(data.coordsBuilder().c(2).build())
-        .imageWidth(start_mm.jint(w))
-        .imageHeight(start_mm.jint(h))
         .build()
 )
-for ch, arr in enumerate((original, mask)):
+for ch, arr in enumerate((original, mask)):          # each arr is a numpy array
     img = start_mm.numpy_to_image(data, arr, coords=data.coordsBuilder().c(ch).build())
     store.putImage(img)
 store.freeze()
-
-# 4. open a Micro-Manager DataViewer on the datastore
-display = studio.displays().createDisplay(store)
+display = studio.displays().createDisplay(store)     # opens an MM DataViewer
 ```
 
-Keep references to `store` and `display` alive (assigning them at the prompt is enough) or the
-window may close. If `snap_core` fails because no camera is loaded, run
-`core.loadSystemConfiguration(str(start_mm.find_mm_root() / "MMConfig_demo.cfg"))` first.
-
-The full version is in [`examples/snap_threshold_2channel.py`](examples/snap_threshold_2channel.py).
+The complete, runnable example — snap → Otsu threshold → 2-channel dataset → DataViewer — is in
+[`examples/snap_threshold_2channel.py`](examples/snap_threshold_2channel.py)
+(`uv run python -i examples/snap_threshold_2channel.py`). Keep references to `store` and
+`display` alive or the window may close.
 
 **Why images show up (bit depth metadata):** MM's display initializes its contrast range from
 each image's `Metadata.getBitDepth()`. If that is unset, the contrast maximum defaults to
 `Long.MAX_VALUE` and the image renders **completely black** (a blank-looking viewer).
-`numpy_to_image` sets `bitDepth` automatically from the array dtype (uint8→8, uint16→16,
-float32→32), so the default path "just works". If you pass your **own** `metadata=`, include a
-`bitDepth` (`data.metadataBuilder().bitDepth(jpype.JInt(16))...`) or the view will be blank.
+`numpy_to_image` always fills in `bitDepth` from the array dtype (uint8→8, uint16→16,
+float32→32) — even when you pass your own `metadata=` (it adds bitDepth unless you set it
+yourself) — so the viewer is never accidentally blank.
+
+Integer-typed `SummaryMetadata`/`Metadata` setters (e.g. `imageWidth`, `imageHeight`,
+`bitDepth`) need a boxed Java `Integer`; `start_mm.jint(x)` does that conversion (a bare Python
+`int` raises "No matching overloads").
 
 Two kinds of metadata are involved, and they do different things: per-image `Metadata` (bit
 depth, pixel size, exposure, …) describes each image; the Datastore's `SummaryMetadata`

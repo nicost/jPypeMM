@@ -420,16 +420,19 @@ def image_to_numpy(image, copy: bool = False) -> "np.ndarray":
         image.getRawPixels(),  # Java byte[]/short[]/float[]
         int(image.getWidth()),
         int(image.getHeight()),
-        int(image.getNumComponents()),
         copy,
     )
 
 
-def _raw_to_numpy(raw, width: int, height: int, n_components: int, copy: bool):
+def _raw_to_numpy(raw, width: int, height: int, copy: bool):
     """Shared core: wrap a Java primitive pixel array as a shaped numpy array.
 
     See image_to_numpy for the copy semantics; this is the buffer-level worker
-    used by both the Image and the CMMCore paths.
+    used by both the Image and the CMMCore paths. The channel count is derived
+    from the buffer length rather than taken as a parameter: RGB is stored 4-wide
+    (BGRA) even though MM reports it as 3 components, and CMMCore (4) and Image (3)
+    disagree on the count for the same data — so the buffer is the only reliable
+    source.
     """
     mv = memoryview(raw)  # JPype: single read-only copy out of the JVM
     dtype = _FORMAT_TO_DTYPE.get(mv.format)
@@ -437,10 +440,6 @@ def _raw_to_numpy(raw, width: int, height: int, n_components: int, copy: bool):
         raise TypeError(f"Unsupported pixel buffer format {mv.format!r}")
     flat = np.frombuffer(mv, dtype=dtype)  # no further copy
 
-    # The number of channels actually present in the buffer is len/(w*h), which is
-    # authoritative. RGB is stored 4-wide (BGRA) even though MM reports it as 3
-    # components — and CMMCore.getNumberOfComponents() (4) and Image.getNumComponents()
-    # (3) disagree for the same data, so we trust the buffer, not n_components.
     channels = flat.size // (width * height)
     if channels == 1:
         arr = flat.reshape(height, width)
@@ -509,25 +508,32 @@ def numpy_to_image(data, array, coords=None, metadata=None):
     for grayscale, and uint8 only for RGB. 16-bit RGB is not supported by MM and
     raises TypeError (see the module note above).
 
-    If ``coords`` is omitted a blank one is built (all axes 0). If ``metadata`` is
-    omitted, metadata carrying the image's bit depth is built — this is REQUIRED
-    for the image to display correctly: MM's display initializes its contrast
-    range from Metadata.getBitDepth(), and a null bit depth makes the contrast
-    maximum default to Long.MAX_VALUE, rendering the image black (blank viewer).
-    Pass your own ``metadata`` to add fields, but include a bitDepth or the view
-    will be blank.
+    If ``coords`` is omitted a blank one is built (all axes 0).
+
+    The returned image always carries a ``bitDepth`` in its Metadata, derived from
+    the array dtype (uint8->8, uint16->16, float32->32). This is REQUIRED for the
+    image to display correctly: MM's display initializes its contrast range from
+    Metadata.getBitDepth(), and a null bit depth makes the contrast maximum default
+    to Long.MAX_VALUE, rendering the image black (blank viewer). You may pass your
+    own ``metadata`` to add fields; bitDepth is filled in for you unless you set it
+    yourself, so the view is never accidentally blank.
 
     One copy is made (numpy -> JVM heap), which is unavoidable.
     """
+    array = np.asarray(array)  # tolerate lists etc.; _numpy_to_raw also requires this
     flat_signed, width, height, bytes_per_pixel, num_components = _numpy_to_raw(array)
     pixels = jpype.JArray.of(flat_signed)
     if coords is None:
         coords = data.coordsBuilder().build()
+    # bitDepth = bits per component (uint8->8, uint16->16, float32->32). Always
+    # ensure it is set, or MM's display picks a degenerate contrast range -> black.
+    bit_depth = jint(array.dtype.itemsize * 8)
     if metadata is None:
-        # bitDepth = bits per component (uint8->8, uint16->16, float32->32). MM's
-        # display needs this set or it picks a degenerate contrast range -> black.
-        bit_depth = int(np.dtype(array.dtype).itemsize * 8)
-        metadata = data.metadataBuilder().bitDepth(jint(bit_depth)).build()
+        metadata = data.metadataBuilder().bitDepth(bit_depth).build()
+    elif metadata.getBitDepth() is None:
+        # Caller supplied metadata without a bitDepth — add it without disturbing
+        # their other fields (copyBuilderPreservingUUID keeps the image identity).
+        metadata = metadata.copyBuilderPreservingUUID().bitDepth(bit_depth).build()
     return data.createImage(
         pixels, width, height, bytes_per_pixel, num_components, coords, metadata
     )
@@ -588,8 +594,7 @@ def snap_core(core, copy: bool = False) -> "np.ndarray":
     raw = core.getImage()
     width = int(core.getImageWidth())
     height = int(core.getImageHeight())
-    n_components = int(core.getNumberOfComponents())
-    return _raw_to_numpy(raw, width, height, n_components, copy)
+    return _raw_to_numpy(raw, width, height, copy)
 
 
 def snap(live, copy: bool = False, display: bool = True):
@@ -608,10 +613,16 @@ def snap(live, copy: bool = False, display: bool = True):
     arrays (one per channel/camera). See image_to_numpy for copy semantics;
     copy=False (default) returns read-only array(s).
 
-    Raises RuntimeError if the live manager returns no images — its snap() catches
-    internal errors and returns null/empty (e.g. a snap issued while the camera is
-    still reconfiguring), rather than throwing.
+    Raises RuntimeError if ``live`` is None (``studio.live()`` not ready yet) or if
+    the live manager returns no images — its snap() catches internal errors and
+    returns null/empty (e.g. a snap issued while the camera is still reconfiguring),
+    rather than throwing.
     """
+    if live is None:
+        raise RuntimeError(
+            "live is None (studio.live() is not ready until MM's GUI finishes "
+            "initializing); wait, or use snap_core(core) for a Core-only snap"
+        )
     images = live.snap(display)
     if images is None or images.size() == 0:
         raise RuntimeError(
@@ -739,6 +750,25 @@ def _install_clean_exit() -> None:
     atexit.register(quit_now)
 
 
+def hold_open(message: str = "GUI is open. Press Ctrl+C to quit.") -> None:
+    """Keep a non-interactive process alive (GUI open) until Ctrl+C, then quit.
+
+    For `__main__` blocks of scripts run non-interactively: under `python -i` the
+    prompt itself keeps the process alive, so this is a no-op there. Otherwise it
+    blocks until KeyboardInterrupt and then quit_now()s (releasing the profile lock
+    and terminating without the JPype shutdown hang).
+    """
+    if sys.flags.interactive:
+        return
+    print("\n" + message)
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("Shutting down.")
+    quit_now()
+
+
 def main(quiet: bool = True, skip_intro: bool = False, wait_for_live: bool = True):
     mm_root = find_mm_root()
     print(f"MM root: {mm_root}")
@@ -760,11 +790,4 @@ def main(quiet: bool = True, skip_intro: bool = False, wait_for_live: bool = Tru
 if __name__ == "__main__":
     _install_clean_exit()
     studio, core = main()
-    if not sys.flags.interactive:
-        print("\nGUI is open. Press Ctrl+C to quit.")
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            print("Shutting down.")
-        quit_now()
+    hold_open()  # no-op under `python -i`; else holds the GUI open until Ctrl+C
